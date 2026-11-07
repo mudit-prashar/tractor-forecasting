@@ -57,6 +57,10 @@ Approval creates an internal planned purchase order and increments that factory'
 
 Approvals from another report can make a saved report stale. Further approvals then require recalculation. Home labels stale planning results and excludes them from its pending-needs total. Proposed Inventory Orders is read-only.
 
+Report deletion sets a deletion timestamp. Deleted reports are excluded from the library, report retrieval, decisions, and Home's latest-report selection. Stored calculation snapshots and decisions remain available to approved purchase orders; deleting a report does not cancel supply or change stock. Deletion uses the same factory transaction lock as approval. Repeated deletion succeeds without further changes.
+
+On the first schema upgrade, the five oldest existing reports are marked as locked demo reports. These flags persist across restarts; new reports are deletable. A fresh database with no saved reports has no locked demo reports.
+
 ## API
 
 Interactive documentation is available at [localhost:8000/docs](http://localhost:8000/docs) while the app runs.
@@ -70,6 +74,7 @@ Interactive documentation is available at [localhost:8000/docs](http://localhost
 | `POST /api/reports` | Calculate and save a report |
 | `GET /api/reports?factory=CA` | List reports; factory filter is optional |
 | `GET /api/reports/{id}` | Saved results and current decision status |
+| `DELETE /api/reports/{id}` | Delete an unlocked report while retaining approved-order history |
 | `POST /api/reports/{id}/recommendations/{component}/decision` | Approve or deny a recommendation |
 | `GET /api/metadata`, `GET /api/overview` | Inspect the original historical data |
 

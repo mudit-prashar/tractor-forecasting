@@ -12,10 +12,10 @@ BASE = os.getenv('REPORT_TEST_URL')
 
 @unittest.skipUnless(BASE, 'Set REPORT_TEST_URL to an isolated test instance')
 class ReportWorkflowTests(unittest.TestCase):
-    def request(self, path, body=None, status=200):
+    def request(self, path, body=None, status=200, method=None):
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(BASE + '/api' + path, data=data,
-                                         headers={'Content-Type': 'application/json'})
+                                         headers={'Content-Type': 'application/json'}, method=method)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 self.assertEqual(response.status, status)
@@ -74,6 +74,29 @@ class ReportWorkflowTests(unittest.TestCase):
         self.assertEqual(result['config']['analyses'], ['failure'])
         self.assertEqual(result['config']['horizon_days'], 14)
         self.request('/reports/does-not-exist', status=404)
+
+    def test_delete_preserves_approved_supply_and_removes_planning_context(self):
+        older = self.request('/reports', {'factory': 'IL', 'name': 'Retained report'}, 201)
+        report = self.request('/reports', {'factory': 'IL', 'name': 'Delete this report'}, 201)
+        self.assertFalse(report['demo_locked'])
+        component = report['recommendations'][0]['id']
+        decided = self.request(f"/reports/{report['id']}/recommendations/{component}/decision", {'action': 'approved'})
+        before = self.request('/factories/IL/workspace')
+        self.request(f"/reports/{report['id']}", method='DELETE')
+        self.request(f"/reports/{report['id']}", method='DELETE')
+        self.assertFalse(any(row['id'] == report['id'] for row in self.request('/reports')))
+        self.assertFalse(any(row['id'] == report['id'] for row in self.request('/reports?factory=IL')))
+        self.request(f"/reports/{report['id']}", status=404)
+        self.request(f"/reports/{report['id']}/recommendations/{component}/decision", {'action': 'approved'}, 404)
+        after = self.request('/factories/IL/workspace')
+        expected_orders = [{**order, 'report_deleted': order['report_id'] == report['id'] or order['report_deleted']}
+                           for order in before['approved_orders']]
+        self.assertEqual(after['approved_orders'], expected_orders)
+        self.assertEqual(after['inventory'], before['inventory'])
+        self.assertEqual(after['latest_report']['id'], older['id'])
+        self.assertTrue(after['latest_report']['is_stale'])
+        self.assertTrue(any(order['report_id'] == report['id'] for order in decided['planned_orders']))
+        self.request('/reports/does-not-exist', status=404, method='DELETE')
 
     def test_factories_have_independent_history_stock_and_orders(self):
         counts = {'CA': 2047, 'FL': 1988, 'IL': 2022, 'NY': 1987, 'TX': 1956}

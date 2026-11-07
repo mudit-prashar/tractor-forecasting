@@ -66,6 +66,14 @@ def initialize_planning(conn):
         inventory_revision INTEGER NOT NULL, dataset_checksum TEXT NOT NULL,
         config JSONB NOT NULL, result JSONB NOT NULL)''')
     conn.execute("ALTER TABLE report_runs ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'Supply planning report'")
+    conn.execute('ALTER TABLE report_runs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ')
+    # Pin the five oldest existing reports once; later reports stay deletable.
+    conn.execute('ALTER TABLE report_runs ADD COLUMN IF NOT EXISTS demo_locked BOOLEAN')
+    conn.execute('''UPDATE report_runs SET demo_locked = id IN (
+        SELECT id FROM report_runs WHERE deleted_at IS NULL ORDER BY created_at, id LIMIT 5)
+        WHERE demo_locked IS NULL''')
+    conn.execute('ALTER TABLE report_runs ALTER COLUMN demo_locked SET DEFAULT FALSE')
+    conn.execute('ALTER TABLE report_runs ALTER COLUMN demo_locked SET NOT NULL')
     conn.execute('''CREATE TABLE IF NOT EXISTS planning_purchase_orders (
         id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES report_runs(id),
         component_id TEXT NOT NULL, supplier TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
@@ -98,7 +106,7 @@ def initialize_planning(conn):
 
 
 def load_report(conn, report_id):
-    row = conn.execute('SELECT * FROM report_runs WHERE id = %s', (report_id,)).fetchone()
+    row = conn.execute('SELECT * FROM report_runs WHERE id = %s AND deleted_at IS NULL', (report_id,)).fetchone()
     if not row:
         raise HTTPException(404, 'Report not found')
     decisions = conn.execute('SELECT * FROM recommendation_decisions WHERE report_id = %s', (report_id,)).fetchall()
@@ -106,7 +114,7 @@ def load_report(conn, report_id):
     revision = conn.execute('SELECT revision FROM factory_state WHERE site = %s', (row['site'],)).fetchone()['revision']
     own_approvals = sum(decision['action'] == 'approved' for decision in decisions)
     result = {**row['result'], 'id': row['id'], 'name': row['name'], 'created_at': row['created_at'],
-              'dataset_checksum': row['dataset_checksum'],
+              'dataset_checksum': row['dataset_checksum'], 'demo_locked': row['demo_locked'],
               'config': {**row['config'], 'name': row['name'], 'factory': row['site']},
               'is_stale': revision != row['inventory_revision'] + own_approvals}
     for item in result['recommendations']:
@@ -128,9 +136,10 @@ def create_router(connection, checksum):
     @router.get('/reports')
     def list_reports(factory: Factory | None = None):
         with connection() as conn:
-            return conn.execute("""SELECT id, name, site, created_at,
+            return conn.execute("""SELECT id, name, site, created_at, demo_locked,
                 config || jsonb_build_object('factory', site) AS config FROM report_runs
-                WHERE (%s::text IS NULL OR site = %s) ORDER BY created_at DESC""", (factory, factory)).fetchall()
+                WHERE deleted_at IS NULL AND (%s::text IS NULL OR site = %s)
+                ORDER BY created_at DESC""", (factory, factory)).fetchall()
 
     @router.get('/factories/{site}/workspace')
     def workspace(site: Factory):
@@ -139,6 +148,7 @@ def create_router(connection, checksum):
         with connection() as conn:
             balances = conn.execute('SELECT * FROM factory_inventory WHERE site = %s ORDER BY component_id', (site,)).fetchall()
             approved = conn.execute('''SELECT p.*, r.name AS report_name, r.result,
+                (r.deleted_at IS NOT NULL) AS report_deleted,
                 d.decided_at AS approved_at FROM planning_purchase_orders p
                 JOIN report_runs r ON r.id = p.report_id
                 JOIN recommendation_decisions d ON d.order_id = p.id AND d.action = 'approved'
@@ -155,6 +165,7 @@ def create_router(connection, checksum):
                                   'available': balance['on_hand'] - balance['reserved'],
                                   'incoming_units': sum(order['quantity'] for order in approved if order['component_id'] == balance['component_id'])})
             latest = conn.execute("""SELECT id FROM report_runs WHERE site = %s
+                AND deleted_at IS NULL
                 AND config->'analyses' @> '["inventory"]'::jsonb ORDER BY created_at DESC LIMIT 1""", (site,)).fetchone()
             planning = None
             if latest:
@@ -215,6 +226,21 @@ def create_router(connection, checksum):
     def get_report(report_id: str):
         with connection() as conn:
             return load_report(conn, report_id)
+
+    @router.delete('/reports/{report_id}')
+    def delete_report(report_id: str):
+        with connection() as conn:
+            row = conn.execute('SELECT site FROM report_runs WHERE id = %s', (report_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'Report not found')
+            # Share the approval lock so deletion cannot race a new decision.
+            conn.execute('SELECT revision FROM factory_state WHERE site = %s FOR UPDATE', (row['site'],))
+            report = conn.execute('SELECT demo_locked, deleted_at FROM report_runs WHERE id = %s', (report_id,)).fetchone()
+            if report['demo_locked']:
+                raise HTTPException(409, 'This demo report is locked and cannot be deleted')
+            # Keep the snapshot and decisions for approved purchase-order history.
+            conn.execute('UPDATE report_runs SET deleted_at = COALESCE(deleted_at, now()) WHERE id = %s', (report_id,))
+            return {'deleted': True, 'id': report_id}
 
     @router.post('/reports/{report_id}/recommendations/{component_id}/decision')
     def decide(report_id: str, component_id: str, decision: Decision):

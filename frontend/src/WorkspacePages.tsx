@@ -85,6 +85,7 @@ export type Workspace = {
     shipping: string;
     report_id: string;
     report_name: string;
+    report_deleted: boolean;
     approved_at: string;
   }[];
   summary: {
@@ -654,12 +655,16 @@ export function WorkspacePages({
                       <span className="pill green">Approved · planned</span>
                     </td>
                     <td>
+                      {order.report_deleted ? (
+                        <span>{order.report_name} <span className="subtle">(deleted)</span></span>
+                      ) : (
                       <button
                         className="text-button"
                         onClick={() => onOpenReport(order.report_id)}
                       >
                         {order.report_name} ↗
                       </button>
+                      )}
                     </td>
                   </tr>
                 ))}

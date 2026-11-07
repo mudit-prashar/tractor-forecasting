@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import {
@@ -30,6 +30,7 @@ type Saved = {
   site: string;
   created_at: string;
   config: Config;
+  demo_locked: boolean;
 };
 type Candidate = {
   supplier: string | null;
@@ -59,6 +60,7 @@ type Report = {
   site: string;
   config: Config;
   is_stale: boolean;
+  demo_locked: boolean;
   summary: {
     forecast_units: number;
     inventory_value: number;
@@ -177,11 +179,12 @@ async function api<T>(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
+  method?: "DELETE",
 ): Promise<T> {
   const response = await fetch(
     `/api${path}`,
     body === undefined
-      ? { signal }
+      ? { signal, method }
       : {
           signal,
           method: "POST",
@@ -342,6 +345,8 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [booting, setBooting] = useState(true);
+  const navigationVersion = useRef(0);
+  const locationKey = useRef(window.location.pathname + window.location.search);
   const show = (module: Analysis) => report?.config.analyses.includes(module);
   const invalid =
     !FACTORY_IDS.includes(draft.factory) ||
@@ -350,12 +355,17 @@ function App() {
     draft.horizon_days < 7 ||
     draft.horizon_days > 90;
 
-  function route(next: Page, site = factory, id?: string) {
+  function route(next: Page, site = factory, id?: string, editor = false) {
+    navigationVersion.current += 1;
     const url = new URL(window.location.href);
     url.search = new URLSearchParams({ page: next, factory: site }).toString();
     if (id) url.searchParams.set("report", id);
+    else if (editor) url.searchParams.set("view", "new");
     url.hash = "";
-    window.history.replaceState(null, "", url);
+    if (url.href !== window.location.href) {
+      window.history.pushState(null, "", url);
+    }
+    locationKey.current = url.pathname + url.search;
     window.scrollTo(0, 0);
   }
   function go(next: Page) {
@@ -375,14 +385,15 @@ function App() {
       page,
       site,
       page === "reports" && view === "editor" && report ? report.id : undefined,
+      page === "reports" && view === "editor",
     );
   }
-  function applyReport(value: Report) {
+  function applyReport(value: Report, navigate = true) {
     setReport(value);
     setDraft({ ...DEFAULT, ...value.config });
     setView("editor");
     setPage("reports");
-    route("reports", factory, value.id);
+    if (navigate) route("reports", factory, value.id);
   }
   function newReport() {
     setReport(null);
@@ -395,7 +406,7 @@ function App() {
     setView("editor");
     setError("");
     setNotice("");
-    route("reports");
+    route("reports", factory, undefined, true);
   }
   function library() {
     go("reports");
@@ -405,6 +416,7 @@ function App() {
       api<Workspace>(workspacePath(site)),
       api<Saved[]>(reportsPath(site)),
     ]);
+    if (site !== initialFactory()) return;
     setWorkspace(data);
     setSaved(runs);
   }
@@ -413,8 +425,6 @@ function App() {
     setBooting(true);
     try {
       setOptions(await api<Options>("/report-options"));
-      const id = new URLSearchParams(window.location.search).get("report");
-      if (id) applyReport(await api<Report>(`/reports/${id}`));
     } catch (error) {
       setError((error as Error).message);
     } finally {
@@ -422,7 +432,45 @@ function App() {
     }
   }
   useEffect(() => {
+    // Pin the initial scope so Back restores it even after localStorage changes.
+    const url = new URL(window.location.href);
+    url.searchParams.set("page", initialPage());
+    url.searchParams.set("factory", initialFactory());
+    window.history.replaceState(null, "", url);
+    locationKey.current = url.pathname + url.search;
+    function restoreLocation() {
+      const site = initialFactory();
+      const next = initialPage();
+      const query = new URLSearchParams(window.location.search);
+      navigationVersion.current += 1;
+      setFactory(site);
+      localStorage.setItem("tractor.factory", site);
+      setPage(next);
+      setSearch("");
+      setError("");
+      setNotice("");
+      setReport(null);
+      setBusy(false);
+      setDraft({ ...DEFAULT, factory: site === "ALL" ? "" : site,
+        analyses: [...DEFAULT.analyses] });
+      setView(next === "reports" && query.get("view") === "new" ? "editor" : "library");
+      const id = query.get("report");
+      if (id) void load(id, false);
+    }
+    function onPopState() {
+      const key = window.location.pathname + window.location.search;
+      // Section anchors share the same view and should retain draft settings.
+      if (key === locationKey.current) return;
+      locationKey.current = key;
+      restoreLocation();
+    }
+    window.addEventListener("popstate", onPopState);
+    restoreLocation();
     void initialize();
+    return () => {
+      navigationVersion.current += 1;
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
   useEffect(() => {
     if (!options) return;
@@ -453,29 +501,38 @@ function App() {
   }, [page, view, factory, report?.id]);
 
   async function run(config = draft) {
+    let version = navigationVersion.current;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      applyReport(await api<Report>("/reports", config));
+      const value = await api<Report>("/reports", config);
+      if (version !== navigationVersion.current) return;
+      applyReport(value);
+      version = navigationVersion.current;
       await refreshWorkspace();
     } catch (error) {
-      setError((error as Error).message);
+      if (version === navigationVersion.current) setError((error as Error).message);
     } finally {
-      setBusy(false);
+      if (version === navigationVersion.current) setBusy(false);
     }
   }
-  async function load(id: string) {
+  async function load(id: string, navigate = true) {
     if (!id) return;
+    const version = ++navigationVersion.current;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      applyReport(await api<Report>(`/reports/${id}`));
+      const value = await api<Report>(`/reports/${id}`);
+      if (version === navigationVersion.current) {
+        setBusy(false);
+        applyReport(value, navigate);
+      }
     } catch (error) {
-      setError((error as Error).message);
+      if (version === navigationVersion.current) setError((error as Error).message);
     } finally {
-      setBusy(false);
+      if (version === navigationVersion.current) setBusy(false);
     }
   }
   async function decide(id: string, action: "approved" | "denied") {
@@ -500,6 +557,32 @@ function App() {
       setError((error as Error).message);
     } finally {
       setDecisionBusy("");
+    }
+  }
+  async function deleteReport(value: Saved | Report) {
+    if (value.demo_locked || !window.confirm(
+      `Delete “${value.name}”? Approved purchase orders will be kept.`,
+    )) return;
+    let version = navigationVersion.current;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await api(`/reports/${value.id}`, undefined, undefined, "DELETE");
+      if (version !== navigationVersion.current) return;
+      if (report?.id === value.id) {
+        setReport(null);
+        go("reports");
+        version = navigationVersion.current;
+      }
+      await refreshWorkspace();
+      if (version === navigationVersion.current) {
+        setNotice("Report deleted. Approved purchase orders have been kept.");
+      }
+    } catch (error) {
+      if (version === navigationVersion.current) setError((error as Error).message);
+    } finally {
+      if (version === navigationVersion.current) setBusy(false);
     }
   }
   function exportReport() {
@@ -646,6 +729,10 @@ function App() {
               )}
               {page === "reports" && view === "editor" && report && (
                 <>
+                  {report.demo_locked ? <Pill>Demo · locked</Pill> : (
+                    <button className="secondary" disabled={updating}
+                      onClick={() => void deleteReport(report)}>Delete report</button>
+                  )}
                   <button
                     className="secondary"
                     disabled={updating}
@@ -925,7 +1012,7 @@ function App() {
                         <th scope="col">Forecast scope</th>
                         <th scope="col">Analyses</th>
                         <th scope="col">
-                          <span className="sr-only">Open report</span>
+                          <span className="sr-only">Report actions</span>
                         </th>
                       </tr>
                     </thead>
@@ -943,6 +1030,7 @@ function App() {
                             <span className="library-id">
                               #{value.id.slice(0, 8)}
                             </span>
+                            {value.demo_locked && <Pill>Demo · locked</Pill>}
                           </td>
                           <td>
                             <Pill>{value.site}</Pill>
@@ -964,13 +1052,22 @@ function App() {
                             </div>
                           </td>
                           <td>
-                            <button
-                              className="secondary"
-                              disabled={updating}
-                              onClick={() => void load(value.id)}
-                            >
-                              Open →
-                            </button>
+                            <div className="report-actions">
+                              <button
+                                className="secondary"
+                                disabled={updating}
+                                onClick={() => void load(value.id)}
+                              >
+                                Open →
+                              </button>
+                              <button className="secondary"
+                                aria-label={`Delete ${value.name} (${value.id.slice(0, 8)})`}
+                                disabled={updating || value.demo_locked}
+                                title={value.demo_locked ? "Demo reports cannot be deleted" : "Delete report"}
+                                onClick={() => void deleteReport(value)}>
+                                Delete
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}

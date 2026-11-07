@@ -38,6 +38,8 @@ To run a report:
 
 Reports save automatically. Approvals appear under **Proposed Inventory Orders** but do not change physical stock or send an order to a supplier. Run another report to include approved incoming supply in the calculations.
 
+Use **Delete** in the report list or report view to remove a report. The five oldest reports present when this feature is first started are locked for the demo. Deleting a report keeps any approved purchase orders. Browser Back and Forward restore pages, report views, and the global factory selection.
+
 ![Home](docs/home-dashboard.png)
 
 [Report list](docs/reports-library.png) · [Report configuration and results](docs/report-dashboard.png)
