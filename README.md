@@ -1,45 +1,152 @@
 # Tractor Supply Planning
 
-A full-stack prototype for helping a tractor manufacturer anticipate demand, supplier delays, and component failures, then choose inventory purchases.
+A local full-stack supply-chain report dashboard for five tractor factory locations. Configure the questions to answer, review forecasts and operational context, then approve or deny proposed inventory purchases.
 
-**Current increment:** a React dashboard backed by FastAPI and PostgreSQL, with validated, persistent CSV ingestion, historical demand, supplier averages, and model/warehouse filters. Forecasting, synthetic component planning data, scenario comparison, and recommendation approval are planned in [BUILD_PLAN.md](BUILD_PLAN.md).
+## Run
 
-The intended workflow is **forecast demand → identify component shortages → compare purchasing options → explain the recommendation → approve a draft order**.
+With Docker running:
 
-## What is implemented
+```sh
+docker compose up --build -d
+```
 
-- Filter historical demand and supplier records by tractor model and warehouse.
-- Inspect weekly demand and recorded supplier delay/failure-rate averages.
-- Preserve and validate the supplied dataset, with atomic imports keyed by file checksum.
-- Start the application and persistent database through Docker Compose.
+Open **http://localhost:8000**. Interactive API documentation is at **http://localhost:8000/docs**. No model-provider credentials are needed for this increment. Initial builds download dependencies; subsequent report runs use the local database.
 
-The dashboard currently shows historical observations. ML predictions, scenario planning, and the LLM assistant are future increments.
+Optional configuration: copy `.env.example` to `.env` to change the local database password or application port. The application binds to loopback and the database is internal to Compose. This is a local demonstration with no login.
+
+![Factory home dashboard](docs/home-dashboard.png)
+
+Screenshots: [Report library](docs/reports-library.png) · [Planning report](docs/report-dashboard.png)
+
+## Report workflow
+
+1. Open **Reports** and choose **New report**. Give the report a name, select its **Report factory / state**, then select any combination of **demand forecast**, **supply risk**, **component failure**, and **inventory recommendations**.
+2. Set a **7–90 day horizon**, forecast model, demand change, and additional supplier delay.
+3. Run the report. Each run saves a named, immutable calculation snapshot and its configuration in PostgreSQL.
+4. Review the forecast, risk estimates, current inventory, customer orders, and supplier/shipping comparisons.
+5. Approve or deny each inventory recommendation. Approval creates an internal planned purchase order; physical inventory remains unchanged. Run another report to include planned incoming supply.
+6. Search the report library by name and reopen existing reports for the selected browsing scope, export JSON, or print a report. New report creation appears only on the Reports list.
+
+The model selector filters the forecast and customer orders. Shared components and replenishment decisions always account for **all factory models**. Inventory recommendations calculate their demand/risk dependencies even if the corresponding charts are not selected.
+
+The global selector offers **All factories**, California (CA), Florida (FL), Illinois (IL), New York (NY), and Texas (TX). It filters browsing across Home, Inventory, Customer Orders, Proposed Inventory Orders and Reports, and persists across navigation and reloads. All factories combines lists and summary totals while keeping every stock position, customer order and approved purchase labeled by factory. Stock is never pooled between locations.
+
+**Report factory / state is an independent selector inside report configuration.** Each report calculates one factory. A specific global selection prefills a new report, while All factories requires an explicit report factory. Running or opening a report does not change the global browsing filter. Saved reports and bookmarks preserve the two scopes independently.
+
+For this demo, CSV warehouse codes are treated as factory locations. Each factory has separate history, mock stock, customer orders, planned purchases and revision state. Existing single-factory reports and orders remain assigned to CA.
+
+## Workspace pages
+
+- **Home:** a subtle animated supply-chain illustration, factory summary cards, upcoming customer orders, and pending needs from the latest inventory report. Stale reports are labeled and not treated as current needs. The animation respects reduced-motion settings.
+- **Inventory:** physical balances, reservations, available stock and approved incoming units. This page works without generating a report.
+- **Customer Orders:** all mock orders for the factory, including orders beyond the default report horizon. Search and status filters are available.
+- **Proposed Inventory Orders:** every approved recommendation for the factory, with quantity, cost, expected arrival and a source-report link. The page is read-only; no receipt or external purchasing action is performed.
+- **Reports:** a searchable, consistently top-aligned list for the current browsing scope and the only place to start a new report. Report detail retains analysis configuration and approve/deny decisions.
+
+In All factories mode, Home shows separate planning context for each factory, preserving differences in report horizon, scenario settings and freshness.
+
+The sidebar provides those five destinations. Clicking the Tractor logo opens Home. On narrow screens, workspace navigation becomes a scrollable horizontal bar. Navigating to Reports resets scroll position and keeps short and empty lists aligned with the top of the workspace.
+
+## What is real and what is synthetic
+
+| Area | Implementation |
+| --- | --- |
+| Historical source | Supplied synthetic interview CSV: 10,000 observations, 2020–2023, five models, five suppliers and five warehouse codes |
+| Report location | Selected factory; only its observations feed forecasting and risk baselines |
+| Planning date | January 1, 2024, a historical replay following the dataset |
+| Demand forecast | Real calculation: trailing mean of eight complete observed weeks, scaled to the selected horizon and demand scenario |
+| Demand uncertainty | Empirical 10th–90th percentile of recent observed weeks; not a calibrated confidence interval |
+| Evaluation | Last eight complete observed weeks held out, with MAE and WAPE; no future demand is used to make the held-out forecast |
+| Supplier delay | Historical mean extra delay plus the configured scenario; historical p90 shown separately |
+| Component failure | Historical mean supplier failure-rate proxy, reused for expected defective component receipts |
+| Operational planning | Explicit mock BOMs, component stock, reservations, supplier costs/base lead times and customer orders |
+| Recommendations | Deterministic supplier/shipping candidate ranking using purchase, holding and component-shortage costs |
+| Decisions and orders | Actual transactional PostgreSQL persistence, duplicate-approval protection and stale-snapshot checks |
+
+Forecasting is currently a **statistical baseline**, not a trained ML model or LLM. Aggregate failure rates do not identify which individual component will fail. The report exposes its assumptions and limitations.
+
+Operational fixtures live in [`backend/app/fixtures/planning.json`](backend/app/fixtures/planning.json). Physical stock is seeded separately for each factory only when a component is first initialized; edits to fixture stock do not silently overwrite an existing database. Customer orders are deterministic fixture data shown at the simulated planning date. Factory stock/order scaling factors are explicit mock assumptions. Inventory and incoming supply are not pooled between factories. The original CA ledger is preserved during the additive schema migration.
+
+## Calculation details
+
+- CSV row grain is undocumented. Demand observations are assumed additive. Complete observed weeks are aggregated per model; missing weeks are unobserved, not automatically zero. A missing week should be filled with zero only when the source is known to be a complete transaction log where no row means no demand. If reporting may be incomplete, keep the value unknown and repair or exclude it; do not interpolate demand without evidence.
+- Missing-week handling affects forecast evaluation: the current baseline and holdout use observed complete weeks in sequence, so gaps can make adjacent points span more than one calendar week. Scores are exploratory until row semantics and gap treatment are confirmed. Partial boundary weeks are excluded from weekly calculations.
+- Confirmed orders replace daily forecast demand when larger, preventing addition of the same order demand twice. Mock reservations represent separate pre-horizon production.
+- Tractor demand expands through each model’s BOM. Requirements for shared components are combined before netting available stock and expected usable incoming receipts.
+- Historical CSV inventory is preserved separately; it is never summed into current component stock.
+- Standard delivery combines the fixture’s base lead time with the historical supplier delay estimate. Expedited delivery assumes three days plus scenario delay and a 40% price premium; this is a demo assumption.
+- Each component compares no purchase against eligible suppliers with standard/expedited shipping. Purchase quantities cover net horizon requirements after the expected defect rate. Ranking uses 25% annual holding cost and a per-component shortage penalty of three times unit cost.
+- This is a bounded, single-purchase comparison, not a global optimizer or a tractor production scheduler. Component shortage costs are proxies; modeled cost differences are not measured business savings.
+- Approval is an internal planning action and never contacts a supplier. Concurrent retries create one planned order. Conflicting decisions and approvals from stale reports are rejected. Decisions within the same report can be processed sequentially.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser[React + TypeScript] --> API[FastAPI]
-    CSV[Supplied synthetic CSV] --> Import[Validated startup import]
+    Browser[React + TypeScript report UI] --> API[FastAPI]
+    CSV[Supplied CSV] --> Import[Validated idempotent import]
     Import --> DB[(PostgreSQL)]
+    Fixture[Mock factory data and BOMs] --> API
+    API --> Plan[Forecast and replenishment calculations]
     API --> DB
 ```
 
-The frontend is compiled with Vite and served by FastAPI. Two containers run at demo time: the application and PostgreSQL.
+Vite builds the frontend in a Node stage, then FastAPI serves the resulting assets. Two containers run: the app and PostgreSQL. Frontend dependencies are locked and installed with `npm ci`.
 
-## Run
+## API
 
-Install/start Docker with the Compose plugin, then run from this directory:
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/health` | Application/data readiness |
+| `GET /api/report-options` | Available factories, planning date and models |
+| `GET /api/workspace` | Combined factory lists and totals with per-factory planning context; stock remains separate |
+| `GET /api/factories/{site}/workspace` | Current inventory, all customer orders, approved purchases, and latest inventory-report context; creates no report |
+| `POST /api/reports` | Validate configuration, calculate and save a report |
+| `GET /api/reports?factory=CA` | Named saved reports for the factory, newest first; filter optional for API clients |
+| `GET /api/reports/{id}` | Saved results with current decision status and stale flag |
+| `POST /api/reports/{id}/recommendations/{component}/decision` | Save `approved` or `denied`; approval creates one internal order |
+| `GET /api/metadata`, `GET /api/overview` | Original source-data explorer APIs, retained for historical inspection |
 
-```sh
-docker compose up --build
+Example report request:
+
+```json
+{
+  "factory": "TX",
+  "horizon_days": 60,
+  "model": "",
+  "demand_change_pct": 20,
+  "extra_delay_days": 5,
+  "analyses": ["demand", "supply", "failure", "inventory"]
+}
 ```
 
-Open **http://localhost:8000**. API documentation: **http://localhost:8000/docs**. Defaults work without an `.env` file. Optionally copy `.env.example` to `.env` and change the local password or port.
+## Development and checks
 
-Once the application is healthy, try selecting a tractor model and warehouse; the demand chart, summary counts, and supplier table should update together.
+Python 3.12 backend; React/TypeScript frontend. To develop the frontend against the running backend:
 
-Initial builds require network access to container and package registries. Once dependencies are built, this increment needs no external service or model credentials. Both the UI and API use the same origin. Only the application is exposed, bound to loopback; PostgreSQL is internal to Compose. The demo has no login and is intended for local use.
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+Vite proxies `/api` to `localhost:8000`. `npm run build` checks TypeScript and produces the frontend bundle.
+
+Calculation tests use the Python standard library:
+
+```sh
+PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v
+```
+
+API lifecycle tests require a fresh, isolated database and are skipped unless `REPORT_TEST_URL` points to an **isolated test instance**. They create reports and orders. They were verified against a separate temporary PostgreSQL database and an app instance on port 8001:
+
+```sh
+REPORT_TEST_URL=http://localhost:8001 PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v
+```
+
+Tests cover receipt timing, demand scenarios, future-data isolation, shared-component requirements, reservations, avoiding duplicate order demand, sufficient stock, configuration validation, concurrent duplicate approvals, conflicting decisions, stale reports, factory isolation, operational pages without reports and incoming supply. Browser checks cover the five navigation pages, global All-factories browsing, independent report factory selection, scope persistence, report-only creation, top alignment at different viewport heights, empty search results, scroll reset, approval visibility, read-only orders, reduced motion, report configuration, saved results, exports and mobile overflow.
+
+## Persistence
 
 ```sh
 docker compose ps
@@ -47,58 +154,8 @@ docker compose logs app
 docker compose down
 ```
 
-The database persists across restarts. Imports are atomic and keyed by the CSV SHA-256 checksum; repeated starts do not duplicate observations. A changed file creates a separate import, and the application queries only its current dataset. To intentionally delete all local database state, use `docker compose down --volumes`.
-
-## API
-
-| Endpoint | Returns |
-| --- | --- |
-| `GET /api/health` | Database/dataset readiness and imported row count |
-| `GET /api/metadata` | Model and warehouse filters, data coverage, source checksum, assumptions |
-| `GET /api/overview?model=TX-100&warehouse=CA` | Historical summary, weekly demand, and supplier averages; filters are optional |
-
-Interactive endpoint definitions are available at `/docs` once the app is running.
-
-## Dataset and assumptions
-
-`data/supply_chain.csv` is a copy of the supplied synthetic interview dataset: 10,000 rows, January 2020–December 2023, 5 tractor models, 5 suppliers, and 5 warehouses. Confirm permission to redistribute it before publishing a public repository.
-
-- Row grain is undocumented. For this explorer, demand observations are **assumed additive** and summed by week. No rows are silently discarded based on repeated dimensional keys.
-- Counts and demand totals cover all selected history; the chart shows the latest 26 observed weeks. Calendar boundary weeks may be partial. Missing weeks mean unobserved data, not zero demand.
-- Supplier averages are **historical observations**, not predictions. Failure rates are means of recorded rate values, not exposure-weighted estimates.
-- Recorded inventory snapshots are preserved in PostgreSQL and are **not summed or interpreted as current component stock**.
-- No components, costs, BOMs, or current stock are invented in this increment.
-
-## Development
-
-Backend: Python 3.12; frontend: Node 22. The container build handles both.
-
-For frontend development against a running Compose application:
-
-```sh
-cd frontend
-npm install
-npm run dev
-```
-
-Vite proxies `/api` to `localhost:8000`. `npm run build` performs a TypeScript check before bundling.
-
-Versions are pinned at the top level. A frontend dependency lockfile still needs to be generated in a network-enabled environment and committed; then switch the Docker build to `npm ci` for fully repeatable transitive resolution.
-
-## Verification status
-
-Verified locally: Python source syntax, Compose configuration, import validation of all 10,000 rows (2,732,321 demand units under the additive assumption), and rejection of empty/malformed files, negative demand, and non-finite failure rates.
-
-Full container startup, SQL execution, and frontend build have **not yet been verified**: the development session has no running Docker daemon and cannot reach dependency registries. Do not treat the scaffold as a validated demo until the clean-start smoke check passes.
-
-Smoke check: start Compose, check `/api/health` reports 10,000 rows, change both filters, verify the chart/table update, restart the app, and confirm the row count remains 10,000.
+Named database volumes preserve source imports, operational stock, reports and decisions. Imports are atomic and checksum-keyed. `docker compose down --volumes` intentionally deletes **all local demo database state**, including decisions.
 
 ## Next increments
 
-1. Validate the container build and complete the first end-to-end smoke check.
-2. Add explicit mock components, bills of materials, current inventory, and supplier costs.
-3. Add demand, supplier-delay, and failure-rate baselines with chronological evaluation.
-4. Compare replenishment actions under demand and delay scenarios, then persist draft-order approvals.
-5. Add an LLM assistant that explains results using bounded calculation tools.
-
-See [BUILD_PLAN.md](BUILD_PLAN.md) for the model/data contract, API design, evaluation approach, and demo script.
+Compare the statistical baselines with trained models using chronological evaluation, add an LLM that explains tool-computed results, and refine replenishment with more realistic supplier capacity, receipt events and multi-period ordering. See [BUILD_PLAN.md](BUILD_PLAN.md) for the original design and broader roadmap; this README describes the implemented version.

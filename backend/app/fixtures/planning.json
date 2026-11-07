@@ -1,0 +1,197 @@
+{
+  "version": "demo-v1",
+  "site": "CA",
+  "planning_date": "2024-01-01",
+  "provenance": "Synthetic planning fixture; not inferred from the supplied CSV",
+  "components": [
+    {
+      "id": "engine-small",
+      "name": "Compact engine",
+      "unit_cost": 1200,
+      "on_hand": 3400,
+      "reserved": 100,
+      "suppliers": ["Supplier A", "Supplier B"]
+    },
+    {
+      "id": "engine-large",
+      "name": "Heavy-duty engine",
+      "unit_cost": 1900,
+      "on_hand": 1900,
+      "reserved": 50,
+      "suppliers": ["Supplier C", "Supplier D"]
+    },
+    {
+      "id": "tires",
+      "name": "All-terrain tire",
+      "unit_cost": 95,
+      "on_hand": 17000,
+      "reserved": 200,
+      "suppliers": ["Supplier A", "Supplier E"]
+    },
+    {
+      "id": "hydraulics",
+      "name": "Hydraulic pump",
+      "unit_cost": 220,
+      "on_hand": 2800,
+      "reserved": 60,
+      "suppliers": ["Supplier B", "Supplier C"]
+    },
+    {
+      "id": "gearbox",
+      "name": "Transmission assembly",
+      "unit_cost": 450,
+      "on_hand": 5000,
+      "reserved": 80,
+      "suppliers": ["Supplier D", "Supplier E"]
+    },
+    {
+      "id": "cab",
+      "name": "Cab assembly",
+      "unit_cost": 300,
+      "on_hand": 15000,
+      "reserved": 0,
+      "suppliers": ["Supplier A", "Supplier D"]
+    }
+  ],
+  "bom": {
+    "TX-100": {
+      "engine-small": 1,
+      "tires": 4,
+      "hydraulics": 1,
+      "gearbox": 1,
+      "cab": 1
+    },
+    "TX-200": {
+      "engine-small": 1,
+      "tires": 4,
+      "hydraulics": 1,
+      "gearbox": 1,
+      "cab": 1
+    },
+    "TX-300": {
+      "engine-small": 1,
+      "tires": 4,
+      "hydraulics": 1,
+      "gearbox": 1,
+      "cab": 1
+    },
+    "TX-400": {
+      "engine-large": 1,
+      "tires": 4,
+      "hydraulics": 1,
+      "gearbox": 1,
+      "cab": 1
+    },
+    "TX-500": {
+      "engine-large": 1,
+      "tires": 4,
+      "hydraulics": 1,
+      "gearbox": 1,
+      "cab": 1
+    }
+  },
+  "suppliers": {
+    "Supplier A": {
+      "base_lead_days": 7,
+      "price_factor": 0.95
+    },
+    "Supplier B": {
+      "base_lead_days": 5,
+      "price_factor": 1.05
+    },
+    "Supplier C": {
+      "base_lead_days": 10,
+      "price_factor": 0.9
+    },
+    "Supplier D": {
+      "base_lead_days": 6,
+      "price_factor": 1.0
+    },
+    "Supplier E": {
+      "base_lead_days": 8,
+      "price_factor": 0.97
+    }
+  },
+  "orders": [
+    {
+      "id": "CO-1041",
+      "customer": "Green Valley Farms",
+      "model": "TX-100",
+      "quantity": 180,
+      "due_in_days": 9,
+      "status": "Confirmed"
+    },
+    {
+      "id": "CO-1042",
+      "customer": "Prairie Agricultural Co.",
+      "model": "TX-400",
+      "quantity": 140,
+      "due_in_days": 16,
+      "status": "Building"
+    },
+    {
+      "id": "CO-1043",
+      "customer": "Sunrise Growers",
+      "model": "TX-200",
+      "quantity": 210,
+      "due_in_days": 24,
+      "status": "Confirmed"
+    },
+    {
+      "id": "CO-1044",
+      "customer": "North Field Partners",
+      "model": "TX-500",
+      "quantity": 120,
+      "due_in_days": 35,
+      "status": "Confirmed"
+    },
+    {
+      "id": "CO-1045",
+      "customer": "Harvest Equipment",
+      "model": "TX-300",
+      "quantity": 160,
+      "due_in_days": 48,
+      "status": "Confirmed"
+    },
+    {
+      "id": "CO-1046",
+      "customer": "Cedar Creek Farms",
+      "model": "TX-100",
+      "quantity": 95,
+      "due_in_days": 73,
+      "status": "Confirmed"
+    }
+  ],
+  "factories": [
+    {
+      "id": "CA",
+      "name": "California",
+      "stock_scale": 1.0,
+      "order_scale": 1.0
+    },
+    {
+      "id": "FL",
+      "name": "Florida",
+      "stock_scale": 0.8,
+      "order_scale": 0.85
+    },
+    {
+      "id": "IL",
+      "name": "Illinois",
+      "stock_scale": 1.1,
+      "order_scale": 1.05
+    },
+    {
+      "id": "NY",
+      "name": "New York",
+      "stock_scale": 0.9,
+      "order_scale": 0.9
+    },
+    {
+      "id": "TX",
+      "name": "Texas",
+      "stock_scale": 1.25,
+      "order_scale": 1.2
+    }
+  ]
+}

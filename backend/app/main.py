@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 
 from .dataset import read_dataset
+from .reports import create_router, initialize_planning
 
 DATA_PATH = Path(os.getenv('DATA_PATH', '/app/data/supply_chain.csv'))
 FRONTEND_PATH = Path(os.getenv('FRONTEND_PATH', '/app/frontend/dist'))
@@ -51,11 +52,13 @@ async def lifespan(app: FastAPI):
             with conn.cursor() as cursor:
                 cursor.executemany('INSERT INTO observations VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
                                    [(checksum, *row) for row in observations])
+        initialize_planning(conn)
     ACTIVE_CHECKSUM = checksum
     yield
 
 
-app = FastAPI(title='Tractor Supply Planning', version='0.1.0', lifespan=lifespan)
+app = FastAPI(title='Tractor Supply Planning', version='0.2.0', lifespan=lifespan)
+app.include_router(create_router(connection, lambda: ACTIVE_CHECKSUM))
 
 
 @app.get('/api/health')
@@ -64,7 +67,7 @@ def health():
         record = conn.execute('SELECT row_count FROM dataset_imports WHERE checksum = %s', (ACTIVE_CHECKSUM,)).fetchone()
     if not record:
         raise HTTPException(503, 'Dataset is not ready')
-    return {'status': 'ready', 'dataset_rows': record['row_count'], 'stage': 'historical-data'}
+    return {'status': 'ready', 'dataset_rows': record['row_count'], 'stage': 'report-dashboard'}
 
 
 @app.get('/api/metadata')
