@@ -13,7 +13,7 @@ COLUMNS = [
 ]
 
 
-def read_dataset(path: Path) -> tuple[str, list[tuple]]:
+def read_dataset(path: Path, extension_path: Path | None = None) -> tuple[str, list[tuple]]:
     checksum = hashlib.sha256(path.read_bytes()).hexdigest()
     observations = []
     with path.open(newline='', encoding='utf-8-sig') as source:
@@ -43,5 +43,12 @@ def read_dataset(path: Path) -> tuple[str, list[tuple]]:
                 raise ValueError(f'Invalid CSV row {row_number}: {error}') from error
     if not observations:
         raise ValueError('The dataset is empty')
+    if extension_path is not None:
+        extension_checksum, extension = read_dataset(extension_path)
+        if min(row[1] for row in extension) <= max(row[1] for row in observations):
+            raise ValueError('Synthetic extension must follow the supplied history')
+        checksum = hashlib.sha256(f'{checksum}:{extension_checksum}'.encode()).hexdigest()
+        offset = len(observations)
+        observations.extend((row[0] + offset, *row[1:]) for row in extension)
     return checksum, observations
 

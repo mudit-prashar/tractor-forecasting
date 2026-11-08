@@ -1,7 +1,9 @@
 import json
+import re
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Literal
 from uuid import uuid4
 
@@ -10,9 +12,12 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 
 from .planning import build_report
+from .summaries import (InvalidSummary, SummaryUnavailable, context_checksum,
+                        generate_summary, report_context, summary_outdated)
 
 FIXTURE = json.loads((Path(__file__).parent / 'fixtures' / 'planning.json').read_text())
 Factory = Literal['CA', 'FL', 'IL', 'NY', 'TX']
+SUMMARY_SLOT = BoundedSemaphore(1)
 
 
 def factory_fixture(site):
@@ -51,6 +56,14 @@ class Decision(BaseModel):
     action: Literal['approved', 'denied']
 
 
+class SummaryRequest(BaseModel):
+    regenerate: bool = False
+
+
+class RecalculationRequest(BaseModel):
+    config: ReportConfig | None = None
+
+
 def initialize_planning(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS planning_state (
         id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL DEFAULT 0)''')
@@ -74,6 +87,11 @@ def initialize_planning(conn):
         WHERE demo_locked IS NULL''')
     conn.execute('ALTER TABLE report_runs ALTER COLUMN demo_locked SET DEFAULT FALSE')
     conn.execute('ALTER TABLE report_runs ALTER COLUMN demo_locked SET NOT NULL')
+    conn.execute('''CREATE TABLE IF NOT EXISTS report_summaries (
+        report_id TEXT PRIMARY KEY REFERENCES report_runs(id),
+        model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+        input_checksum TEXT NOT NULL, content JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now())''')
     conn.execute('''CREATE TABLE IF NOT EXISTS planning_purchase_orders (
         id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES report_runs(id),
         component_id TEXT NOT NULL, supplier TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
@@ -105,7 +123,7 @@ def initialize_planning(conn):
     conn.execute('CREATE INDEX IF NOT EXISTS planned_orders_site_idx ON planning_purchase_orders(site, expected_date)')
 
 
-def load_report(conn, report_id):
+def load_report(conn, report_id, dataset_checksum):
     row = conn.execute('SELECT * FROM report_runs WHERE id = %s AND deleted_at IS NULL', (report_id,)).fetchone()
     if not row:
         raise HTTPException(404, 'Report not found')
@@ -116,11 +134,18 @@ def load_report(conn, report_id):
     result = {**row['result'], 'id': row['id'], 'name': row['name'], 'created_at': row['created_at'],
               'dataset_checksum': row['dataset_checksum'], 'demo_locked': row['demo_locked'],
               'config': {**row['config'], 'name': row['name'], 'factory': row['site']},
-              'is_stale': revision != row['inventory_revision'] + own_approvals}
+              'is_stale': (revision != row['inventory_revision'] + own_approvals
+                           or row['dataset_checksum'] != dataset_checksum
+                           or row['result'].get('fixture_version') != FIXTURE['version'])}
     for item in result['recommendations']:
         if decision := by_component.get(item['id']):
             item.update(status=decision['action'], order_id=decision['order_id'])
     result['planned_orders'] = conn.execute('SELECT * FROM planning_purchase_orders WHERE site = %s ORDER BY expected_date, id', (row['site'],)).fetchall()
+    saved_summary = conn.execute('SELECT * FROM report_summaries WHERE report_id = %s', (report_id,)).fetchone()
+    result['ai_summary'] = None
+    if saved_summary:
+        summary = {**saved_summary['content'], **{key: value for key, value in saved_summary.items() if key != 'content'}}
+        result['ai_summary'] = {**summary, 'is_outdated': summary_outdated(summary, result)}
     return result
 
 
@@ -169,7 +194,7 @@ def create_router(connection, checksum):
                 AND config->'analyses' @> '["inventory"]'::jsonb ORDER BY created_at DESC LIMIT 1""", (site,)).fetchone()
             planning = None
             if latest:
-                report = load_report(conn, latest['id'])
+                report = load_report(conn, latest['id'], checksum())
                 planning = {key: report[key] for key in ('id', 'name', 'created_at', 'is_stale', 'config', 'end_date')}
                 planning['needs'] = [{**item, 'coverage_days': next(row['coverage_days'] for row in report['inventory'] if row['id'] == item['id'])}
                                      for item in report['recommendations'] if item['status'] == 'pending']
@@ -199,15 +224,46 @@ def create_router(connection, checksum):
             'provenance': FIXTURE['provenance'],
         }
 
-    @router.post('/reports', status_code=201)
-    def run_report(config: ReportConfig):
-        if config.model and config.model not in FIXTURE['bom']:
-            raise HTTPException(422, 'Unknown tractor model')
+    def calculate_report(config: ReportConfig | None = None, source_id: str | None = None):
         report_id = str(uuid4())
-        fixture = factory_fixture(config.factory)
         with connection() as conn:
+            if source_id:
+                source = conn.execute('SELECT * FROM report_runs WHERE id = %s AND deleted_at IS NULL', (source_id,)).fetchone()
+                if not source:
+                    raise HTTPException(404, 'Report not found')
+                if config is None:
+                    config = ReportConfig(**{**source['config'], 'name': source['name'], 'factory': source['site']})
+                elif config.factory != source['site']:
+                    raise HTTPException(422, 'Versions of a report use the same factory. Create a new report to select another factory.')
+            if config.model and config.model not in FIXTURE['bom']:
+                raise HTTPException(422, 'Unknown tractor model')
+            fixture = factory_fixture(config.factory)
             # One short transaction gives the calculation a consistent operational snapshot.
             state = conn.execute('SELECT revision FROM factory_state WHERE site = %s FOR UPDATE', (config.factory,)).fetchone()
+            lineage = {'version_root_id': report_id, 'version_base_name': config.name, 'version': 1}
+            if source_id:
+                # Deletion and other recalculations use the same factory lock.
+                source = conn.execute('SELECT * FROM report_runs WHERE id = %s AND deleted_at IS NULL', (source_id,)).fetchone()
+                if not source:
+                    raise HTTPException(404, 'Report not found')
+                root_id = source['result'].get('version_root_id', source_id)
+                base_name = source['result'].get('version_base_name', source['name'])
+                source_version = source['result'].get('version', 1)
+                # Older Run report calls could copy a displayed version into an
+                # independent report's name without storing version metadata.
+                if 'version' not in source['result']:
+                    if match := re.fullmatch(r'(.+) \(v([1-9][0-9]{0,5})\)', source['name']):
+                        base_name, source_version = match.group(1), int(match.group(2))
+                if config.name != source['name']:
+                    base_name = config.name
+                version = conn.execute('''SELECT coalesce(max((result->>'version')::integer), 1) + 1 AS next_version
+                    FROM report_runs WHERE site = %s AND (id = %s OR result->>'version_root_id' = %s)''',
+                                       (config.factory, root_id, root_id)).fetchone()['next_version']
+                version = max(version, source_version + 1)
+                suffix = f' (v{version})'
+                config = config.model_copy(update={'name': base_name[:100 - len(suffix)].rstrip() + suffix})
+                lineage = {'version_root_id': root_id, 'version_base_name': base_name,
+                           'version': version, 'recalculated_from': source_id}
             observations = conn.execute('''SELECT * FROM observations
                 WHERE dataset_checksum = %s AND warehouse_location = %s AND observed_date < %s
                 ORDER BY observed_date''', (checksum(), config.factory, date.fromisoformat(fixture['planning_date']))).fetchall()
@@ -218,14 +274,60 @@ def create_router(connection, checksum):
                 result = build_report(config.model_dump(), observations, fixture, inventory, incoming)
             except ValueError as error:
                 raise HTTPException(422, str(error)) from error
+            result.update(lineage)
             conn.execute('INSERT INTO report_runs (id, inventory_revision, dataset_checksum, config, result, name, site) VALUES (%s, %s, %s, %s, %s, %s, %s)',
                          (report_id, state['revision'], checksum(), Jsonb(config.model_dump()), Jsonb(result), config.name, config.factory))
-            return load_report(conn, report_id)
+            return load_report(conn, report_id, checksum())
+
+    @router.post('/reports', status_code=201)
+    def run_report(config: ReportConfig):
+        return calculate_report(config)
+
+    @router.post('/reports/{report_id}/recalculate', status_code=201)
+    def recalculate_report(report_id: str, request: RecalculationRequest | None = None):
+        return calculate_report(config=request.config if request else None, source_id=report_id)
 
     @router.get('/reports/{report_id}')
     def get_report(report_id: str):
         with connection() as conn:
-            return load_report(conn, report_id)
+            return load_report(conn, report_id, checksum())
+
+    @router.post('/reports/{report_id}/summary')
+    def summarize_report(report_id: str, request: SummaryRequest):
+        with connection() as conn:
+            report = load_report(conn, report_id, checksum())
+        if report['ai_summary'] and not report['ai_summary']['is_outdated'] and not request.regenerate:
+            return report['ai_summary']
+        if not SUMMARY_SLOT.acquire(blocking=False):
+            raise HTTPException(429, 'A local summary is already being generated. Try again shortly.')
+        try:
+            context = report_context(report)
+            try:
+                generated = generate_summary(context)
+            except SummaryUnavailable as error:
+                raise HTTPException(503, str(error)) from error
+            except InvalidSummary as error:
+                raise HTTPException(502, str(error)) from error
+            # Inference holds no database transaction or factory lock. Verify inputs
+            # again after it completes so a concurrent decision cannot be hidden.
+            with connection() as conn:
+                conn.execute('SELECT revision FROM factory_state WHERE site = %s FOR UPDATE', (report['site'],))
+                current = load_report(conn, report_id, checksum())
+                if context_checksum(report_context(current)) != generated['input_checksum']:
+                    raise HTTPException(409, 'This report changed while the summary was generated. Try again.')
+                content = {key: value for key, value in generated.items()
+                           if key not in ('model', 'prompt_version', 'input_checksum')}
+                conn.execute('''INSERT INTO report_summaries
+                    (report_id, model, prompt_version, input_checksum, content)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (report_id) DO UPDATE SET model = EXCLUDED.model,
+                    prompt_version = EXCLUDED.prompt_version, input_checksum = EXCLUDED.input_checksum,
+                    content = EXCLUDED.content, created_at = now()''',
+                             (report_id, generated['model'], generated['prompt_version'],
+                              generated['input_checksum'], Jsonb(content)))
+                return load_report(conn, report_id, checksum())['ai_summary']
+        finally:
+            SUMMARY_SLOT.release()
 
     @router.delete('/reports/{report_id}')
     def delete_report(report_id: str):
@@ -249,7 +351,7 @@ def create_router(connection, checksum):
             if not row:
                 raise HTTPException(404, 'Report not found')
             conn.execute('SELECT revision FROM factory_state WHERE site = %s FOR UPDATE', (row['site'],))
-            report = load_report(conn, report_id)
+            report = load_report(conn, report_id, checksum())
             recommendation = next((item for item in report['recommendations'] if item['id'] == component_id), None)
             if recommendation is None:
                 raise HTTPException(404, 'Recommendation not found')
@@ -258,7 +360,7 @@ def create_router(connection, checksum):
                     return report
                 raise HTTPException(409, 'This recommendation already has a decision')
             if decision.action == 'approved' and report['is_stale']:
-                raise HTTPException(409, 'Incoming supply changed after this report. Run a new report before approving.')
+                raise HTTPException(409, 'Supply, source data, or planning assumptions changed after this report. Run a new report before approving.')
             if decision.action == 'approved' and 'inventory' not in report['config']['analyses']:
                 raise HTTPException(409, 'Run a report with inventory recommendations selected before approving')
             order_id = None
@@ -272,6 +374,6 @@ def create_router(connection, checksum):
                 conn.execute('UPDATE factory_state SET revision = revision + 1 WHERE site = %s', (row['site'],))
             conn.execute('INSERT INTO recommendation_decisions (report_id, component_id, action, order_id) VALUES (%s, %s, %s, %s)',
                          (report_id, component_id, decision.action, order_id))
-            return load_report(conn, report_id)
+            return load_report(conn, report_id, checksum())
 
     return router

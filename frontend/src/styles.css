@@ -1418,3 +1418,19 @@ footer {
   align-items: center;
   gap: 0.5rem;
 }
+.summary-highlights {
+  padding-left: 22px;
+  line-height: 1.7;
+}
+.summary-highlights li + li {
+  margin-top: 10px;
+}
+.summary-highlights a {
+  color: #246f5d;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ai-summary .panel-heading {
+  flex-wrap: wrap;
+  gap: 14px;
+}

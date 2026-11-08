@@ -209,8 +209,8 @@ export function WorkspacePages({
     <aside className="notice">
       <strong>{scopeLabel}</strong>
       <span>
-        Planning date: {date(data.planning_date)} · Historical replay with mock
-        operational data. Approved orders are purchase plans; stock has not been
+        Planning date: {date(data.planning_date)} · Synthetic demo with generated
+        2024–2026 history and mock operations. Approved orders are purchase plans; stock has not been
         received. {allFactories && "Stock remains separate for each factory."}
       </span>
     </aside>
@@ -349,7 +349,7 @@ export function WorkspacePages({
             <div className="notice">
               <strong>Report needs a refresh</strong>
               <span>
-                Incoming supply changed after this snapshot. Open the report and
+                Supply, source data, or planning assumptions changed after this snapshot. Open the report and
                 recalculate before relying on its recommendations.
               </span>
             </div>

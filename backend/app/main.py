@@ -12,6 +12,7 @@ from .dataset import read_dataset
 from .reports import create_router, initialize_planning
 
 DATA_PATH = Path(os.getenv('DATA_PATH', '/app/data/supply_chain.csv'))
+MOCK_DATA_PATH = os.getenv('MOCK_DATA_PATH', '/app/data/supply_chain_mock_2024_2026.csv')
 FRONTEND_PATH = Path(os.getenv('FRONTEND_PATH', '/app/frontend/dist'))
 ACTIVE_CHECKSUM = ''
 
@@ -24,7 +25,7 @@ def connection():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ACTIVE_CHECKSUM
-    checksum, observations = read_dataset(DATA_PATH)
+    checksum, observations = read_dataset(DATA_PATH, Path(MOCK_DATA_PATH) if MOCK_DATA_PATH else None)
     with connection() as conn:
         # Serialize startup/import if multiple application instances start together.
         conn.execute('SELECT pg_advisory_xact_lock(761034)')
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):
         imported = conn.execute('SELECT checksum FROM dataset_imports WHERE checksum = %s', (checksum,)).fetchone()
         if not imported:
             conn.execute('INSERT INTO dataset_imports(checksum, filename, row_count) VALUES (%s, %s, %s)',
-                         (checksum, DATA_PATH.name, len(observations)))
+                         (checksum, DATA_PATH.name + (f' + {Path(MOCK_DATA_PATH).name}' if MOCK_DATA_PATH else ''), len(observations)))
             with conn.cursor() as cursor:
                 cursor.executemany('INSERT INTO observations VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
                                    [(checksum, *row) for row in observations])
@@ -78,9 +79,11 @@ def metadata():
             min(observed_date) AS start_date, max(observed_date) AS end_date
             FROM observations WHERE dataset_checksum = %s''', (ACTIVE_CHECKSUM,)).fetchone()
     return {**result, 'dataset_checksum': ACTIVE_CHECKSUM, 'source': DATA_PATH.name,
+            'synthetic_extension': Path(MOCK_DATA_PATH).name if MOCK_DATA_PATH else None,
             'assumptions': ['Demand observations are assumed additive; row grain is undocumented.',
-                            'Recorded inventory is not interpreted as current component stock.'],
-            'stage': 'Historical data explorer; forecasts and planning are the next increment.'}
+                            'Recorded inventory is not interpreted as current component stock.',
+                            'The 2024–2026 extension is synthetic, sampled from recency-weighted supplied history; it is not new evidence.'],
+            'stage': 'Historical baselines and mock factory planning.'}
 
 
 @app.get('/api/overview')
@@ -109,7 +112,8 @@ def overview(model: str | None = None, warehouse: str | None = None):
             FROM observations WHERE {where} GROUP BY supplier ORDER BY supplier''', parameters).fetchall()
     return {'summary': summary, 'weekly': weekly, 'suppliers': suppliers,
             'dataset_checksum': ACTIVE_CHECKSUM, 'units': 'tractor units (assumed additive demand)',
-            'series_type': 'observed', 'note': 'Boundary weeks may be partial; missing weeks are unobserved, not zero.'}
+            'series_type': 'supplied_and_synthetic' if MOCK_DATA_PATH else 'observed',
+            'note': '2024–2026 extension is synthetic, not observed evidence. Boundary weeks may be partial; missing weeks are unobserved, not zero.'}
 
 
 if (FRONTEND_PATH / 'assets').is_dir():

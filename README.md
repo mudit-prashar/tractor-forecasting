@@ -2,7 +2,7 @@
 
 A local app for reviewing tractor demand, checking parts inventory, and approving purchase recommendations across five factories.
 
-The app currently uses historical forecasting baselines. It does not include a trained ML model or LLM. Inventory, bills of materials, costs, and customer orders are mock data.
+The app uses historical forecasting baselines and an optional local LLM to explain saved reports. Inventory, bills of materials, costs, and customer orders are mock data.
 
 ## Run
 
@@ -15,6 +15,14 @@ docker compose up --build -d
 Open [localhost:8000](http://localhost:8000). API documentation is at [localhost:8000/docs](http://localhost:8000/docs).
 
 The first build downloads dependencies. No API key is required. To change the port or local database password, copy `.env.example` to `.env`.
+
+For local report explanations, download the small model once:
+
+```sh
+docker compose exec llm ollama pull qwen3:1.7b
+```
+
+Open a saved report and click **Generate summary**. Summaries include supporting report figures and persist with that report version. Forecasts and purchase quantities still come from the app's calculations. The model runs locally in Ollama; Docker inference on this Mac uses the CPU. The app works without a downloaded model.
 
 ## Using the app
 
@@ -38,6 +46,8 @@ To run a report:
 
 Reports save automatically. Approvals appear under **Proposed Inventory Orders** but do not change physical stock or send an order to a supplier. Run another report to include approved incoming supply in the calculations.
 
+When a saved report is open, **Run next version** saves your edited settings as a new snapshot named `Texas demand review (v2)`, then `(v3)`. **Recalculate** also advances that sequence using the saved settings. Start a separate report or choose another factory through **New report** in the report library. Earlier reports and their decisions remain available.
+
 Use **Delete** in the report list or report view to remove a report. The five oldest reports present when this feature is first started are locked for the demo. Deleting a report keeps any approved purchase orders. Browser Back and Forward restore pages, report views, and the global factory selection.
 
 ![Home](docs/home-dashboard.png)
@@ -46,14 +56,14 @@ Use **Delete** in the report list or report view to remove a report. The five ol
 
 ## Data and calculations
 
-The supplied CSV contains 10,000 observations from 2020–2023. Its five warehouse codes—CA, FL, IL, NY, and TX—serve as factory locations in this demo. Planning starts on **January 1, 2024**.
+The original CSV contains 10,000 synthetic observations from 2020–2023 and is unchanged. A separate mock extension adds 6,977 rows from January 2024 through November 7, 2026, sampled from the original rows with more weight on recent history. Its five warehouse codes—CA, FL, IL, NY, and TX—serve as factory locations. Planning starts on **November 8, 2026**, a fixed demo date.
 
 - **Demand:** mean of the last eight complete observed weeks.
 - **Supplier delay:** historical mean delay, plus any report adjustment.
 - **Component failure:** a supplier failure-rate proxy, not a prediction of individual part failures.
 - **Purchasing:** compare eligible suppliers and shipping options using purchase, holding, and shortage costs.
 
-CSV row meaning and missing-week handling are assumptions. Forecast error metrics are exploratory. See [calculation details and limitations](docs/implementation.md#calculations-and-assumptions).
+CSV row meaning and missing-week handling are assumptions. Scores on generated data describe the demo, not real-world accuracy. See [generation and calculation details](docs/implementation.md#calculations-and-assumptions).
 
 Mock factory data is in [planning.json](backend/app/fixtures/planning.json). Each factory has its own inventory and approved orders. The tractor-model filter limits the forecast and customer-order view; parts planning still includes all models at that factory because they share components.
 
@@ -93,6 +103,6 @@ API tests are skipped unless a separate test instance is configured. See [API te
 
 `docker compose down` stops the app and keeps the database. Reports and decisions survive restarts.
 
-`docker compose down --volumes` deletes all local database state.
+`docker compose down --volumes` deletes the local database and downloaded models.
 
 The app is intended for a local demo: it listens on localhost and has no login.

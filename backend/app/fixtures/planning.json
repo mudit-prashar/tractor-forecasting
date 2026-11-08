@@ -1,7 +1,8 @@
 {
-  "version": "demo-v1",
+  "version": "demo-v2-weighted-history",
   "site": "CA",
-  "planning_date": "2024-01-01",
+  "planning_date": "2026-11-08",
+  "history_provenance": "Supplied synthetic history: 2020–2023. Generated extension: Jan 2024–Nov 7, 2026, sampled from original rows with a one-year recency half-life. Synthetic evaluation scores describe the demo, not real-world accuracy.",
   "provenance": "Synthetic planning fixture; not inferred from the supplied CSV",
   "components": [
     {

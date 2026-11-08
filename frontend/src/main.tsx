@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { ReportSummary, type SavedSummary } from "./ReportSummary";
 import {
   PAGES,
   WorkspacePages,
@@ -57,6 +58,7 @@ type Report = {
   created_at: string;
   planning_date: string;
   end_date: string;
+  history_provenance?: string;
   site: string;
   config: Config;
   is_stale: boolean;
@@ -130,6 +132,7 @@ type Report = {
   }[];
   assumptions: string[];
   source_rows: number;
+  ai_summary: SavedSummary | null;
 };
 const MODULES: { id: Analysis; title: string; detail: string }[] = [
   { id: "demand", title: "Demand forecast", detail: "Expected tractor demand" },
@@ -500,13 +503,16 @@ function App() {
     window.scrollTo(0, 0);
   }, [page, view, factory, report?.id]);
 
-  async function run(config = draft) {
+  async function run(config = draft, recalculateId = report?.id) {
     let version = navigationVersion.current;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const value = await api<Report>("/reports", config);
+      const value = await api<Report>(
+        recalculateId ? `/reports/${recalculateId}/recalculate` : "/reports",
+        recalculateId ? { config } : config,
+      );
       if (version !== navigationVersion.current) return;
       applyReport(value);
       version = navigationVersion.current;
@@ -694,7 +700,7 @@ function App() {
             <span className="site-dot" />
             <div>
               Local demo workspace
-              <small>Historical replay · mock operations</small>
+              <small>Synthetic demo · mock operations</small>
             </div>
           </div>
         </aside>
@@ -824,7 +830,7 @@ function App() {
                   <select
                     aria-label="Report factory / state"
                     value={draft.factory}
-                    disabled={updating || !options}
+                    disabled={updating || !options || !!report}
                     onChange={(event) =>
                       setDraft({ ...draft, factory: event.target.value })
                     }
@@ -920,7 +926,7 @@ function App() {
                   disabled={invalid || updating || !options}
                   onClick={() => void run()}
                 >
-                  {busy ? "Running report…" : "Run report →"}
+                  {busy ? "Running report…" : report ? "Run next version →" : "Run report →"}
                 </button>
               </div>
               <div className="config-notes">
@@ -929,7 +935,7 @@ function App() {
                   independently of the global browsing filter. Inventory
                   recommendations calculate demand and risk inputs
                   automatically. Shared parts are always planned for the whole
-                  factory.
+                  factory. {report && "Use New report from the report library to select another factory."}
                 </span>
                 <span>
                   {!draft.analyses.length
@@ -1138,20 +1144,19 @@ function App() {
                 </label>
               </div>
               <aside className="notice">
-                <strong>Historical replay</strong>
+                <strong>Demo planning</strong>
                 <span>
-                  Planning date is {day(report.planning_date)}, following the
-                  supplied history. Forecasts use statistical baselines. BOMs,
+                  Planning date is {day(report.planning_date)}. {report.history_provenance || "Based on the supplied 2020–2023 synthetic history."} Forecasts use statistical baselines. BOMs,
                   current inventory, costs and customer orders are mock data.
                 </span>
               </aside>
               {report.is_stale && (
                 <div className="error" role="alert">
-                  Incoming supply has changed since this snapshot. Run a new
+                  Supply, source data, or planning assumptions have changed since this snapshot. Run a new
                   report before approving more purchases.
                   <button
                     disabled={updating}
-                    onClick={() => void run(report.config)}
+                    onClick={() => void run(report.config, report.id)}
                   >
                     Recalculate
                   </button>
@@ -1191,6 +1196,7 @@ function App() {
                   </article>
                 ))}
               </section>
+              <ReportSummary key={report.id} reportId={report.id} initialSummary={report.ai_summary} />
               <nav className="section-nav" aria-label="Report sections">
                 {show("demand") && <a href="#forecast">Forecast</a>}
                 {(show("supply") || show("failure")) && (

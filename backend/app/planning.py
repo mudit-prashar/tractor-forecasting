@@ -176,6 +176,7 @@ def build_report(config, observations, fixture, inventory, incoming):
                       'detail': f"Expected extra delay {supplier['expected_delay_days']} days; historical p90 {supplier['historical_p90_delay_days']} days. " + ('Supplier observations are over 30 days old.' if supplier['stale'] else 'Based on recorded supplier history.')})
     return {
         'planning_date': start.isoformat(), 'end_date': end.isoformat(), 'site': fixture['site'],
+        'history_provenance': fixture.get('history_provenance', 'Supplied synthetic historical observations.'),
         'config': config, 'summary': {'forecast_units': sum(item['predicted_units'] for item in model_forecasts),
                                     'inventory_value': sum(item['on_hand'] * item['unit_cost'] for item in items),
                                     'components_at_risk': sum(item['projected_shortage'] > 0 for item in items),
@@ -187,7 +188,7 @@ def build_report(config, observations, fixture, inventory, incoming):
                      'evaluation': 'Last 8 complete observed weeks held out; forecast trained only on earlier weeks.'},
         'suppliers': suppliers, 'inventory': items, 'recommendations': recommendations, 'risks': risks,
         'customer_orders': [order for order in orders if not config['model'] or order['model'] == config['model']],
-        'assumptions': [fixture['provenance'], 'CSV warehouse location codes are treated as factory identifiers for this demo. Each factory uses only its own source observations and separate operational stock and planned orders.',
+        'assumptions': [fixture['provenance'], fixture.get('history_provenance', 'Supplied synthetic historical observations.'), 'CSV warehouse location codes are treated as factory identifiers for this demo. Each factory uses only its own source observations and separate operational stock and planned orders.',
                         'Demand observations are assumed additive; missing calendar weeks are unobserved, not zero.',
                         'Inventory planning covers all factory models; the model filter affects the forecast and customer orders.',
                         'Confirmed customer orders replace forecast demand on their due dates when larger. Mock reservations represent separate pre-horizon production and are already deducted from available stock.',

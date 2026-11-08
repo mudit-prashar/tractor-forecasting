@@ -1,4 +1,17 @@
 services:
+  llm:
+    image: ollama/ollama:0.40.15
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_KEEP_ALIVE: 5m
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 10s
+      timeout: 5s
+      retries: 12
   db:
     image: postgres:17.6-alpine
     environment:
@@ -22,7 +35,11 @@ services:
       PGUSER: tractor
       PGPASSWORD: ${POSTGRES_PASSWORD:-local-demo-password}
       DATA_PATH: /app/data/supply_chain.csv
+      MOCK_DATA_PATH: /app/data/supply_chain_mock_2024_2026.csv
       FRONTEND_PATH: /app/frontend/dist
+      LLM_BASE_URL: ${LLM_BASE_URL-http://llm:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:1.7b}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
     depends_on:
       db:
         condition: service_healthy
@@ -34,4 +51,5 @@ services:
       start_period: 30s
 volumes:
   postgres_data:
+  ollama_models:
 

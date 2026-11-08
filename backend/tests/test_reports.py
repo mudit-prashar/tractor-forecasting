@@ -6,6 +6,11 @@ import os
 import unittest
 import urllib.error
 import urllib.request
+from collections import Counter
+from datetime import date
+from pathlib import Path
+
+from app.dataset import read_dataset
 
 BASE = os.getenv('REPORT_TEST_URL')
 
@@ -17,7 +22,7 @@ class ReportWorkflowTests(unittest.TestCase):
         request = urllib.request.Request(BASE + '/api' + path, data=data,
                                          headers={'Content-Type': 'application/json'}, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urllib.request.urlopen(request, timeout=180 if path.endswith('/summary') else 20) as response:
                 self.assertEqual(response.status, status)
                 return json.load(response)
         except urllib.error.HTTPError as error:
@@ -75,6 +80,71 @@ class ReportWorkflowTests(unittest.TestCase):
         self.assertEqual(result['config']['horizon_days'], 14)
         self.request('/reports/does-not-exist', status=404)
 
+    def test_recalculation_versions_preserve_snapshots_and_decisions(self):
+        original = self.request('/reports', {'name': 'Versioned review', 'factory': 'FL'}, 201)
+        component = original['recommendations'][0]['id']
+        approved = self.request(f"/reports/{original['id']}/recommendations/{component}/decision", {'action': 'approved'})
+        before = self.request('/factories/FL/workspace')
+        v2 = self.request(f"/reports/{original['id']}/recalculate", {}, 201)
+        v3 = self.request(f"/reports/{v2['id']}/recalculate", {}, 201)
+        self.assertEqual(v2['name'], 'Versioned review (v2)')
+        self.assertEqual(v3['name'], 'Versioned review (v3)')
+        self.assertEqual(v2['config']['name'], v2['name'])
+        self.assertEqual(v2['version_root_id'], original['id'])
+        self.assertEqual(v3['version_root_id'], original['id'])
+        self.assertEqual(v3['recalculated_from'], v2['id'])
+        self.assertTrue(all(item['status'] == 'pending' for item in v2['recommendations']))
+        self.assertTrue(any(item['incoming_units'] > 0 for item in v2['inventory']))
+        retained = self.request(f"/reports/{original['id']}")
+        self.assertEqual(retained['name'], original['name'])
+        self.assertEqual(retained['forecast'], original['forecast'])
+        self.assertEqual(retained['recommendations'], approved['recommendations'])
+        after = self.request('/factories/FL/workspace')
+        self.assertEqual(after['inventory'], before['inventory'])
+        self.assertEqual(after['approved_orders'], before['approved_orders'])
+        endpoint = f"/reports/{original['id']}/recalculate"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            siblings = list(executor.map(lambda _: self.request(endpoint, {}, 201), range(2)))
+        self.assertEqual({item['name'] for item in siblings}, {'Versioned review (v4)', 'Versioned review (v5)'})
+        self.request(f"/reports/{siblings[0]['id']}", method='DELETE')
+        v6 = self.request(endpoint, {}, 201)
+        self.assertEqual(v6['name'], 'Versioned review (v6)')
+        self.request(f"/reports/{siblings[0]['id']}/recalculate", {}, 404)
+        self.request('/reports/missing/recalculate', {}, 404)
+
+    def test_recalculation_keeps_name_limit_and_independent_sequences(self):
+        original = self.request('/reports', {'name': 'X' * 100, 'factory': 'NY'}, 201)
+        v2 = self.request(f"/reports/{original['id']}/recalculate", {}, 201)
+        self.assertEqual(len(v2['name']), 100)
+        self.assertTrue(v2['name'].endswith(' (v2)'))
+        self.assertEqual(v2['version_base_name'], original['name'])
+        independent = self.request('/reports', {'name': 'X' * 100, 'factory': 'NY'}, 201)
+        separate_v2 = self.request(f"/reports/{independent['id']}/recalculate", {}, 201)
+        self.assertEqual(separate_v2['version'], 2)
+        self.assertEqual(separate_v2['version_root_id'], independent['id'])
+
+    def test_running_saved_report_versions_edited_settings(self):
+        original = self.request('/reports', {'name': 'Edited version review', 'factory': 'CA'}, 201)
+        config = {**original['config'], 'horizon_days': 14, 'demand_change_pct': 30,
+                  'extra_delay_days': 5, 'model': 'TX-100', 'analyses': ['demand']}
+        v2 = self.request(f"/reports/{original['id']}/recalculate", {'config': config}, 201)
+        self.assertEqual(v2['name'], 'Edited version review (v2)')
+        self.assertEqual(v2['version_root_id'], original['id'])
+        for key in ('horizon_days', 'demand_change_pct', 'extra_delay_days', 'model', 'analyses'):
+            self.assertEqual(v2['config'][key], config[key])
+        v3 = self.request(f"/reports/{v2['id']}/recalculate", {}, 201)
+        self.assertEqual(v3['name'], 'Edited version review (v3)')
+        renamed = self.request(f"/reports/{v3['id']}/recalculate",
+                               {'config': {**v3['config'], 'name': 'Adjusted demand review'}}, 201)
+        self.assertEqual(renamed['name'], 'Adjusted demand review (v4)')
+        self.assertEqual(renamed['version_root_id'], original['id'])
+        self.assertEqual(self.request(f"/reports/{original['id']}")['config'], original['config'])
+        self.request(f"/reports/{original['id']}/recalculate", {'config': {**config, 'factory': 'TX'}}, 422)
+        self.request(f"/reports/{original['id']}/recalculate", {'config': {**config, 'horizon_days': 0}}, 422)
+        independent = self.request('/reports', {'name': original['name'], 'factory': 'CA'}, 201)
+        self.assertEqual(independent['version'], 1)
+        self.assertEqual(independent['version_root_id'], independent['id'])
+
     def test_delete_preserves_approved_supply_and_removes_planning_context(self):
         older = self.request('/reports', {'factory': 'IL', 'name': 'Retained report'}, 201)
         report = self.request('/reports', {'factory': 'IL', 'name': 'Delete this report'}, 201)
@@ -99,7 +169,10 @@ class ReportWorkflowTests(unittest.TestCase):
         self.request('/reports/does-not-exist', status=404, method='DELETE')
 
     def test_factories_have_independent_history_stock_and_orders(self):
-        counts = {'CA': 2047, 'FL': 1988, 'IL': 2022, 'NY': 1987, 'TX': 1956}
+        root = Path(__file__).resolve().parents[2]
+        _, observations = read_dataset(root / 'data/supply_chain.csv', root / 'data/supply_chain_mock_2024_2026.csv')
+        planning = date.fromisoformat(self.request('/report-options')['planning_date'])
+        counts = Counter(row[8] for row in observations if row[1] < planning)
         options = self.request('/report-options')
         self.assertEqual({item['id'] for item in options['factories']}, set(counts))
         reports = {}
@@ -138,6 +211,35 @@ class ReportWorkflowTests(unittest.TestCase):
         workspace = self.request('/factories/NY/workspace')
         self.assertEqual(workspace['latest_report']['id'], newest['id'])
         self.assertTrue(workspace['latest_report']['is_stale'])
+
+    @unittest.skipUnless(os.getenv('REPORT_TEST_LLM'), 'Set REPORT_TEST_LLM=1 to exercise local model inference')
+    def test_summary_persistence_cache_decisions_and_report_version_isolation(self):
+        original = self.request('/reports', {'name': 'Summary integration', 'factory': 'CA'}, 201)
+        before = self.request('/factories/CA/workspace')
+        summary = self.request(f"/reports/{original['id']}/summary", {})
+        self.assertEqual(summary['report_id'], original['id'])
+        self.assertFalse(summary['is_outdated'])
+        self.assertEqual({item['section'] for item in summary['highlights']}, set(original['config']['analyses']))
+        cached = self.request(f"/reports/{original['id']}/summary", {})
+        self.assertEqual(cached, summary)
+        loaded = self.request(f"/reports/{original['id']}")
+        self.assertEqual(loaded['ai_summary'], summary)
+        self.assertEqual(loaded['recommendations'], original['recommendations'])
+        self.assertEqual(loaded['forecast'], original['forecast'])
+        after = self.request('/factories/CA/workspace')
+        self.assertEqual(after['inventory'], before['inventory'])
+        self.assertEqual(after['approved_orders'], before['approved_orders'])
+        component = original['recommendations'][0]['id']
+        changed = self.request(f"/reports/{original['id']}/recommendations/{component}/decision", {'action': 'denied'})
+        self.assertTrue(changed['ai_summary']['is_outdated'])
+        refreshed = self.request(f"/reports/{original['id']}/summary", {})
+        self.assertFalse(refreshed['is_outdated'])
+        self.assertNotEqual(refreshed['input_checksum'], summary['input_checksum'])
+        next_version = self.request(f"/reports/{original['id']}/recalculate", {}, 201)
+        self.assertIsNone(next_version['ai_summary'])
+        self.request(f"/reports/{original['id']}", method='DELETE')
+        self.request(f"/reports/{original['id']}/summary", {}, 404)
+        self.request('/reports/missing/summary', {}, 404)
 
     def test_all_factories_view_preserves_factory_rows_and_context(self):
         sites = ('CA', 'FL', 'IL', 'NY', 'TX')

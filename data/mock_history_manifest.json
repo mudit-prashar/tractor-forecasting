@@ -1,0 +1,39 @@
+{
+  "kind": "synthetic extension; not observed business data",
+  "generator": "scripts/generate_mock_history.py",
+  "source": "supply_chain.csv",
+  "source_sha256": "7f148485289f7bd91d7e59915ad3e01a8956e9d19c5c73d5bebf8e2bb1477931",
+  "output": "supply_chain_mock_2024_2026.csv",
+  "output_sha256": "98af0fb1249a8a531fe6a9a214a6619055cf38cde026c2b3f8e3087774b395a2",
+  "start_date": "2024-01-01",
+  "end_date": "2026-11-07",
+  "seed": 20261108,
+  "half_life_days": 365,
+  "method": "Whole-row bootstrap with replacement; weight = 2 ** (-age_days / half_life_days), age measured from latest supplied observation. Only the date is replaced.",
+  "source_sampling_probability_by_year": {
+    "2020": 0.063382,
+    "2021": 0.133398,
+    "2022": 0.267076,
+    "2023": 0.536145
+  },
+  "rows": 6977,
+  "rows_by_year": {
+    "2024": 2403,
+    "2025": 2434,
+    "2026": 2140
+  },
+  "rows_by_factory": {
+    "CA": 1421,
+    "FL": 1420,
+    "IL": 1434,
+    "NY": 1274,
+    "TX": 1428
+  },
+  "assumptions": [
+    "Observation frequency follows the supplied average daily rate with Poisson variation.",
+    "The one-year recency half-life is a configurable demo assumption, not fitted or validated.",
+    "No future trend, seasonality, inflation path, or supplier improvement is inferred.",
+    "Generated rows reuse historical values and associations; they are not independent evidence or a valid real-world evaluation set.",
+    "Historical inventory observations do not seed physical component stock."
+  ]
+}
