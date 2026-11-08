@@ -95,4 +95,4 @@ API tests are skipped unless a separate test instance is configured. See [API te
 
 `docker compose down --volumes` deletes all local database state.
 
-The app is intended for a local demo: it listens on localhost and has no login. The original design and remaining work are in [BUILD_PLAN.md](BUILD_PLAN.md).
+The app is intended for a local demo: it listens on localhost and has no login.
