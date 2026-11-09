@@ -123,6 +123,14 @@ def initialize_planning(conn):
     conn.execute('CREATE INDEX IF NOT EXISTS planned_orders_site_idx ON planning_purchase_orders(site, expected_date)')
 
 
+def incoming_orders(conn, site):
+    # Originating snapshots carry the scope; legacy orders predate that metadata
+    # and retain their original factory-wide meaning without rewriting the ledger.
+    return conn.execute('''SELECT p.*, coalesce(r.result->'scope'->>'model', '') AS model
+        FROM planning_purchase_orders p JOIN report_runs r ON r.id = p.report_id
+        WHERE p.site = %s ORDER BY p.expected_date, p.id''', (site,)).fetchall()
+
+
 def load_report(conn, report_id, dataset_checksum):
     row = conn.execute('SELECT * FROM report_runs WHERE id = %s AND deleted_at IS NULL', (report_id,)).fetchone()
     if not row:
@@ -140,7 +148,11 @@ def load_report(conn, report_id, dataset_checksum):
     for item in result['recommendations']:
         if decision := by_component.get(item['id']):
             item.update(status=decision['action'], order_id=decision['order_id'])
-    result['planned_orders'] = conn.execute('SELECT * FROM planning_purchase_orders WHERE site = %s ORDER BY expected_date, id', (row['site'],)).fetchall()
+    report_model = row['result'].get('scope', {}).get('model')
+    components = {item['id'] for item in result['inventory']}
+    result['planned_orders'] = [order for order in incoming_orders(conn, row['site'])
+                                if order['component_id'] in components
+                                and (not report_model or not order['model'] or order['model'] == report_model)]
     saved_summary = conn.execute('SELECT * FROM report_summaries WHERE report_id = %s', (report_id,)).fetchone()
     result['ai_summary'] = None
     if saved_summary:
@@ -269,7 +281,7 @@ def create_router(connection, checksum):
                 ORDER BY observed_date''', (checksum(), config.factory, date.fromisoformat(fixture['planning_date']))).fetchall()
             inventory = {row['component_id']: {'on_hand': row['on_hand'], 'reserved': row['reserved']}
                          for row in conn.execute('SELECT * FROM factory_inventory WHERE site = %s', (config.factory,)).fetchall()}
-            incoming = conn.execute('SELECT * FROM planning_purchase_orders WHERE site = %s', (config.factory,)).fetchall()
+            incoming = incoming_orders(conn, config.factory)
             try:
                 result = build_report(config.model_dump(), observations, fixture, inventory, incoming)
             except ValueError as error:

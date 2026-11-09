@@ -101,6 +101,7 @@ export type Workspace = {
     is_stale: boolean;
     end_date: string;
     config: {
+      model?: string;
       horizon_days: number;
       demand_change_pct: number;
       extra_delay_days: number;
@@ -283,7 +284,7 @@ export function WorkspacePages({
                 {allFactories
                   ? "Latest planning context for each factory; scopes and assumptions remain separate."
                   : latest
-                    ? `Based on “${latest.name}” · ${latest.config.horizon_days} days · ${latest.config.demand_change_pct}% demand scenario · +${latest.config.extra_delay_days} days supplier delay`
+                    ? `Based on “${latest.name}” · ${latest.config.model || "All models"} · ${latest.config.horizon_days} days · ${latest.config.demand_change_pct}% demand scenario · +${latest.config.extra_delay_days} days supplier delay`
                     : "Run an inventory report to identify component needs."}
               </p>
             </div>
@@ -310,7 +311,7 @@ export function WorkspacePages({
                   </h3>
                   <p>
                     {item.latest_report
-                      ? `${item.latest_report.name} · ${item.latest_report.config.horizon_days} days · ${item.latest_report.config.demand_change_pct}% demand scenario · +${item.latest_report.config.extra_delay_days} days delay`
+                      ? `${item.latest_report.name} · ${item.latest_report.config.model || "All models"} · ${item.latest_report.config.horizon_days} days · ${item.latest_report.config.demand_change_pct}% demand scenario · +${item.latest_report.config.extra_delay_days} days delay`
                       : "Open Reports to assess this factory’s inventory needs."}
                   </p>
                   {item.latest_report ? (

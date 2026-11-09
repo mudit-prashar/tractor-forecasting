@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from decimal import Decimal
 
-PROMPT_VERSION = 'report-summary-v3'
+PROMPT_VERSION = 'report-summary-v4-model-scope'
 DEFAULT_MODEL = 'qwen3:1.7b'
 DEFAULT_URL = 'http://llm:11434'
 SYSTEM_PROMPT = '''You summarize a synthetic tractor factory planning report.
@@ -46,38 +46,46 @@ def report_context(report):
         facts.append({'id': key, 'text': text})
 
     selected = set(report['config']['analyses'])
+    model = report.get('scope', {}).get('model')
+    scope_label = f"{model} at factory {report['site']}" if model else f"all models at factory {report['site']}"
+    demand_label = f"{report['config']['model']} at factory {report['site']}" if report['config']['model'] else scope_label
     add('context', f"Factory {report['site']}; planning period {report['planning_date']} to {report['end_date']}; {report['config']['horizon_days']} days. This is a synthetic demo report.")
     if report['is_stale']:
         add('stale', 'This saved report is stale. Recalculate before approving further purchases.')
     if 'demand' in selected:
-        add('demand', f"Forecast demand is {report['summary']['forecast_units']:,} tractor units, using a trailing eight-week mean baseline. This is a scenario estimate, not confirmed sales.")
+        add('demand', f"For {demand_label}, forecast demand is {report['summary']['forecast_units']:,} tractor units, using a trailing eight-week mean baseline. This is a scenario estimate, not confirmed sales.")
         add('chart', 'The forecast line is a historical mean adjusted by the selected scenario and confirmed customer orders. Its range is historical spread, not a calibrated confidence interval. Partial boundary weeks must not be interpreted as a demand trend.')
     if 'inventory' in selected:
         add('inventory', f"{report['summary']['components_at_risk']} components have projected shortages without additional purchases. Available stock is on-hand minus reserved stock; approved orders are incoming supply, not physical stock.")
         for item in sorted(report['inventory'], key=lambda row: row['coverage_days'])[:3]:
             add(f"stock-{item['id']}", f"{item['name']}: {item['available']:,} available component units, {item['coverage_days']} days of coverage, {item['projected_shortage']:,} projected shortage units, and {item['incoming_units']:,} incoming component units in this report's horizon.")
         for item in sorted(report['recommendations'], key=lambda row: row['purchase_cost'], reverse=True)[:3]:
-            add(f"purchase-{item['id']}", f"{item['component']} proposal: {item['quantity']:,} component units from {item['supplier']}, {item['shipping']} shipping, arrival {item['arrival_date']}, purchase cost ${item['purchase_cost']:,.2f}; decision {item['status']}. Cost comparisons are modeled estimates, not measured savings.")
+            add(f"purchase-{item['id']}", f"For {scope_label}, {item['component']} proposal: {item['quantity']:,} component units from {item['supplier']}, {item['shipping']} shipping, arrival {item['arrival_date']}, purchase cost ${item['purchase_cost']:,.2f}; decision {item['status']}. Cost comparisons are modeled estimates, not measured savings.")
         if not report['recommendations']:
-            add('no-purchases', 'This report has no recommended component purchases.')
+            add('no-purchases', f'This report has no recommended component purchases for {scope_label}.')
     if 'supply' in selected:
         for item in sorted(report['suppliers'], key=lambda row: row['expected_delay_days'], reverse=True)[:2]:
-            add(f"delay-{item['supplier'].replace(' ', '-')}", f"{item['supplier']}: expected extra delay {item['expected_delay_days']} days; historical p90 delay {item['historical_p90_delay_days']} days. The expectation is a historical mean plus the scenario adjustment.")
+            add(f"delay-{item['supplier'].replace(' ', '-')}", f"For {scope_label}, {item['supplier']}: expected extra delay {item['expected_delay_days']} days; historical p90 delay {item['historical_p90_delay_days']} days. The expectation is a historical mean plus the scenario adjustment.")
+        if not report['suppliers']:
+            add('no-supplier-history', f'No eligible supplier observations are available for {scope_label}; delivery risk is unknown.')
     if 'failure' in selected:
-        item = max(report['suppliers'], key=lambda row: row['failure_rate_pct'])
-        add('failure', f"{item['supplier']}: historical failure-rate proxy {item['failure_rate_pct']}%. This does not predict individual component failures or field reliability.")
+        if report['suppliers']:
+            item = max(report['suppliers'], key=lambda row: row['failure_rate_pct'])
+            add('failure', f"For {scope_label}, {item['supplier']}: historical failure-rate proxy {item['failure_rate_pct']}%. This does not predict individual component failures or field reliability.")
+        else:
+            add('failure', f'No eligible supplier failure-rate observations are available for {scope_label}; failure exposure is unknown.')
     sections = {}
     if 'demand' in selected:
         sections['demand'] = ['demand']
     if 'inventory' in selected:
         sections['inventory'] = [fact['id'] for fact in facts if fact['id'].startswith('purchase-')] or ['no-purchases']
     if 'supply' in selected:
-        sections['supply'] = [fact['id'] for fact in facts if fact['id'].startswith('delay-')]
+        sections['supply'] = [fact['id'] for fact in facts if fact['id'].startswith('delay-')] or ['no-supplier-history']
     if 'failure' in selected:
         sections['failure'] = ['failure']
     return {'report_id': report['id'], 'dataset_checksum': report['dataset_checksum'],
             'fixture_version': report['fixture_version'], 'selected_analyses': sorted(selected),
-            'is_stale': report['is_stale'],
+            'is_stale': report['is_stale'], 'scope': report.get('scope'),
             # Include every decision, even if its recommendation is outside the short fact list.
             'decisions': [{'id': item['id'], 'status': item['status']} for item in report['recommendations']],
             'facts': facts, 'required_sections': sections}

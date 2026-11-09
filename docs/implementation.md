@@ -129,7 +129,24 @@ Inference holds no database transaction or factory lock. The app permits one act
 
 Stock is seeded once per factory/component. Editing fixture balances does not overwrite existing database balances. Existing CA stock, reports, and orders are preserved by the schema migration.
 
-Reservations represent separate production committed before the planning period. Available stock is on-hand stock minus reservations. Shared-component requirements are combined across all models in the factory before calculating purchase needs.
+Reservations represent separate production committed before the planning period. Available stock is on-hand stock minus reservations. Reports do not reserve or allocate physical balances to a model. Model-specific scenarios use only compatible parts from the same shared factory balance; independently calculated reports must not be added together as stock allocations.
+
+The BOM is a mock assumption, not a mapping supplied by the CSV:
+
+| Tractor models | Engine per tractor | Other components per tractor |
+| --- | --- | --- |
+| TX-100, TX-200, TX-300 | One compact engine | Four tires, one hydraulic pump, one transmission assembly, one cab |
+| TX-400, TX-500 | One heavy-duty engine | Four tires, one hydraulic pump, one transmission assembly, one cab |
+
+### Report model scope
+
+`Report model` governs the entire calculation. A selected model filters observations before weekly aggregation, calendar boundaries, supplier delay averages, supplier failure proxies, and holdout evaluation. Customer orders and component requirements use only that model's mock BOM. Components outside that BOM are omitted, including their stock value, failure exposure, and purchase recommendations. `All models` aggregates requirements within the selected factory.
+
+Suppliers without observations for the selected model are excluded from purchase comparisons, with missing-history notes and unknown failure rates. The calculation does not substitute another model's supplier observations. Local AI facts carry the same model scope as the saved results.
+
+Approved orders derive their model assignment from the originating snapshot's `result.scope.model`. A model-specific report includes compatible incoming parts from that model's orders and shared factory orders; it excludes orders assigned to another model. An all-model report includes all compatible factory orders. Legacy orders predate this metadata and keep their original factory-wide meaning. No approved order rows are rewritten or received by this change.
+
+New snapshots store `scope.model`, `scope.models`, and `scope.stock_policy` alongside their results. The fixture version change marks older snapshots stale. Earlier model-filtered reports retain their original mixed scope and show a legacy-scope notice until recalculated; saved results, decisions, and orders remain intact. The factory revision lock remains conservative: any new approved supply in the factory can require a report refresh.
 
 All-factory browsing combines rows and summary totals. It does not transfer stock, combine report scenarios into one forecast, or pool inventory between locations.
 
@@ -163,6 +180,28 @@ Report deletion sets a deletion timestamp. Deleted reports are excluded from the
 Deletion does not reset the sequence: if v2 is deleted, the next saved run is v3. Gaps in the visible report list are expected.
 
 On the first schema upgrade, the five oldest existing reports are marked as locked demo reports. These flags persist across restarts; new reports are deletable. A fresh database with no saved reports has no locked demo reports.
+
+### Fresh demo workspace
+
+After the app initializes a fresh database, `docker compose exec -T app python -m app.demo_reports` creates five locked root snapshots atomically. It refuses to run when any reports already exist. Generation or insert failures leave no partially seeded library. It does not approve purchases, change stock, or increment factory revisions.
+
+| Factory | Report model | Horizon | Scenario |
+| --- | --- | --- | --- |
+| CA | All models | 60 days | Baseline |
+| FL | TX-100 | 60 days | Baseline |
+| IL | TX-200 | 30 days | Demand -5% |
+| NY | TX-400 | 60 days | Supplier delay +3 days |
+| TX | All models | 90 days | Demand +20%, supplier delay +5 days |
+
+For an explicitly requested clean wipe, the following removes the entire application database, including reports, decisions, orders, and stock, then reimports the CSVs, restores fixture balances, and seeds those examples. Source files and downloaded models remain in place:
+
+```sh
+docker compose stop app
+docker compose exec -T db dropdb --force -U tractor tractor
+docker compose exec -T db createdb -U tractor tractor
+docker compose up -d --wait app
+docker compose exec -T app python -m app.demo_reports
+```
 
 ## API
 
@@ -227,13 +266,14 @@ Summary unit tests cover input scoping, source references, numeric checks, malfo
 
 ## Documentation screenshots
 
-Screenshots use the current app with a separate temporary database: one report for each factory, a California report with an approved internal order and a second version, and a locally generated explanation. The planning date is November 8, 2026. This keeps documentation examples separate from the user's saved workspace.
+Screenshots use the app with separate temporary databases. Home, the report library, configuration, and the model-specific example show the five locked fresh-start examples; the Illinois example includes a real local AI explanation. The remaining all-model views illustrate an earlier California scenario with an approved internal order and a second version. All use a fixed planning date of November 8, 2026. Documentation examples remain separate from the user's saved workspace.
 
 | Screenshot | View |
 | --- | --- |
 | [Home](home-dashboard.png) | All-factory overview and separate planning needs |
 | [Report library](reports-library.png) | Saved factory reports and versioned snapshots |
 | [Report configuration](report-configuration.png) | Selected analyses, fixed report factory, and Run next version |
+| [Model-specific report](model-report.png) | TX-200 demand, compatible parts, supplier facts, and local explanation |
 | [Saved report](report-dashboard.png) | Report context, metrics, and local explanation |
 | [Demand forecast](report-forecast.png) | Historical weekly observations, baseline forecast, and empirical range |
 | [Local explanation](report-summary.png) | Generated highlights with their supporting source facts |

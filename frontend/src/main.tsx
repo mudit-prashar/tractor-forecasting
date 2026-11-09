@@ -59,6 +59,7 @@ type Report = {
   planning_date: string;
   end_date: string;
   history_provenance?: string;
+  scope?: { model: string | null; models: string[]; stock_policy: string };
   site: string;
   config: Config;
   is_stale: boolean;
@@ -104,7 +105,8 @@ type Report = {
     projected_shortage: number;
     unit_cost: number;
     eligible_suppliers: string[];
-    failure_rate_proxy_pct: number;
+    failure_rate_proxy_pct: number | null;
+    suppliers_without_history?: string[];
   }[];
   recommendations: Recommendation[];
   risks: {
@@ -129,6 +131,7 @@ type Report = {
     quantity: number;
     expected_date: string;
     status: string;
+    model?: string;
   }[];
   assumptions: string[];
   source_rows: number;
@@ -609,6 +612,8 @@ function App() {
         JSON.stringify(draft[key]) !== JSON.stringify(report.config[key]),
     );
   const updating = busy || !!decisionBusy || booting;
+  const legacyModelScope = !!report?.config.model && !report.scope;
+  const reportScope = report?.scope?.model || "All models";
   const filteredSaved = saved.filter(
     (value) =>
       (factory === "ALL" || value.site === factory) &&
@@ -866,9 +871,9 @@ function App() {
                   </div>
                 </label>
                 <label>
-                  Forecast model
+                  Report model
                   <select
-                    aria-label="Forecast model"
+                    aria-label="Report model"
                     value={draft.model}
                     disabled={updating || !options}
                     onChange={(event) =>
@@ -932,10 +937,10 @@ function App() {
               <div className="config-notes">
                 <span>
                   Report calculations use the factory selected above,
-                  independently of the global browsing filter. Inventory
-                  recommendations calculate demand and risk inputs
-                  automatically. Shared parts are always planned for the whole
-                  factory. {report && "Use New report from the report library to select another factory."}
+                  independently of the global browsing filter. The report model
+                  applies to every analysis, customer order, and purchase recommendation.
+                  Parts follow the mock bill of materials; available factory stock is shared.
+                  {report && " Use New report from the report library to select another factory."}
                 </span>
                 <span>
                   {!draft.analyses.length
@@ -1015,7 +1020,7 @@ function App() {
                         <th scope="col">Factory</th>
                         <th scope="col">Created</th>
                         <th scope="col">Horizon</th>
-                        <th scope="col">Forecast scope</th>
+                        <th scope="col">Report model</th>
                         <th scope="col">Analyses</th>
                         <th scope="col">
                           <span className="sr-only">Report actions</span>
@@ -1119,7 +1124,7 @@ function App() {
                   </p>
                   <h2>{report.name}</h2>
                   <p className="report-period">
-                    Factory {report.site} · {day(report.planning_date)} –{" "}
+                    Factory {report.site} · {legacyModelScope ? `${report.config.model} forecast / factory-wide parts (legacy)` : reportScope} · {day(report.planning_date)} –{" "}
                     {day(report.end_date)} · {report.config.horizon_days} days
                   </p>
                 </div>
@@ -1148,12 +1153,14 @@ function App() {
                 <span>
                   Planning date is {day(report.planning_date)}. {report.history_provenance || "Based on the supplied 2020–2023 synthetic history."} Forecasts use statistical baselines. BOMs,
                   current inventory, costs and customer orders are mock data.
+                  {report.scope?.model && ` All analyses in this snapshot cover ${report.scope.model}.`}
                 </span>
               </aside>
               {report.is_stale && (
                 <div className="error" role="alert">
-                  Supply, source data, or planning assumptions have changed since this snapshot. Run a new
-                  report before approving more purchases.
+                  {legacyModelScope
+                    ? "This older snapshot used model-specific demand with factory-wide parts and risks. Recalculate to apply the selected model to every analysis."
+                    : "Supply, source data, or planning assumptions have changed since this snapshot. Run a new report before approving more purchases."}
                   <button
                     disabled={updating}
                     onClick={() => void run(report.config, report.id)}
@@ -1172,21 +1179,21 @@ function App() {
                     `tractor units · ${report.config.model || "all models"}`,
                   ],
                   [
-                    "Current inventory value",
+                    report.scope?.model ? "Relevant shared stock value" : "Current inventory value",
                     money(report.summary.inventory_value),
-                    "on-hand component stock · mock",
+                    report.scope?.model ? `${reportScope} parts · shared factory stock` : "on-hand component stock · mock",
                   ],
                   [
                     "Components at risk",
                     number(report.summary.components_at_risk),
-                    "projected shortfall · whole factory",
+                    `projected shortfall · ${legacyModelScope ? "legacy factory scope" : reportScope}`,
                   ],
                   [
                     "Recommended purchases",
                     show("inventory")
                       ? money(report.summary.recommended_purchase_cost)
                       : "Not selected",
-                    "proposed spend before decisions",
+                    `${legacyModelScope ? "legacy factory scope" : reportScope} · before decisions`,
                   ],
                 ].map(([label, value, detail]) => (
                   <article className="metric" key={label}>
@@ -1274,7 +1281,7 @@ function App() {
                         Historical mean estimates from{" "}
                         {number(report.source_rows)} observations at the{" "}
                         {report.site}
-                        factory
+                        factory · {legacyModelScope ? "legacy factory scope" : reportScope}
                       </p>
                     </div>
                     <Pill tone="amber">Baseline estimates</Pill>
@@ -1329,6 +1336,7 @@ function App() {
                     </table>
                   </div>
                   <p className="footnote">
+                    {report.scope?.model && `Supplier observations are filtered to ${reportScope}. `}
                     Delay is additional to the supplier’s assumed base lead
                     time. Failure rates are supplier/model aggregate proxies,
                     not predictions that an individual component will fail.
@@ -1364,11 +1372,11 @@ function App() {
                             </td>
                             <td>
                               {item.eligible_suppliers?.join(", ") ||
-                                "Not recorded in this snapshot"}
+                                (item.eligible_suppliers ? "No history in this scope" : "Not recorded in this snapshot")}
                             </td>
                             <td>
-                              {item.failure_rate_proxy_pct === undefined
-                                ? "—"
+                              {item.failure_rate_proxy_pct == null
+                                ? "No history"
                                 : `${item.failure_rate_proxy_pct}%`}
                             </td>
                           </tr>
@@ -1389,8 +1397,7 @@ function App() {
                   <div>
                     <h2>Current inventory</h2>
                     <p>
-                      Factory {report.site} · all models · physical stock is
-                      separate from reservations and planned receipts
+                      Factory {report.site} · {legacyModelScope ? "legacy factory scope" : reportScope} · parts selected using the mock bill of materials
                     </p>
                   </div>
                   <Pill>Mock operational data</Pill>
@@ -1437,6 +1444,8 @@ function App() {
                   Coverage uses available stock divided by average projected
                   daily component requirements. Incoming supply and shortfalls
                   reflect the saved snapshot; rerun after approving purchases.
+                  {report.scope?.model && " Stock is a shared factory balance, not an allocation to this model. This scenario does not reserve it; separate model reports must not be added together as stock allocations."}
+                  {report.inventory.some((item) => item.suppliers_without_history?.length) && " Suppliers without history in this model scope are excluded from comparisons; missing rates are shown as No history."}
                 </p>
               </section>
               {show("inventory") && (
@@ -1446,7 +1455,7 @@ function App() {
                       <h2>Inventory recommendations</h2>
                       <p>
                         Compare suppliers and shipping, then approve or deny
-                        each proposed purchase.
+                        each proposed purchase for {legacyModelScope ? "the legacy factory scope" : reportScope}.
                       </p>
                     </div>
                     <Pill>
@@ -1462,8 +1471,9 @@ function App() {
                     <div className="empty">
                       <h3>No new purchases recommended.</h3>
                       <p>
-                        Current stock and planned receipts cover requirements,
-                        or no tested purchase improves modeled cost.
+                        {report.summary.components_at_risk
+                          ? "No purchase option was selected. Review the projected shortfalls and available supplier history."
+                          : "Current stock and planned receipts cover this report's requirements."}
                       </p>
                     </div>
                   )}
@@ -1638,7 +1648,7 @@ function App() {
                       <h2>Approved planned orders</h2>
                       <p>
                         Internal purchase drafts · approval does not increase
-                        physical stock
+                        physical stock. {report.scope?.model && `Showing shared factory orders and orders for ${reportScope}.`}
                       </p>
                     </div>
                     <Pill tone="green">Saved in PostgreSQL</Pill>
@@ -1651,6 +1661,7 @@ function App() {
                           <th scope="col">Component</th>
                           <th scope="col">Supplier</th>
                           <th scope="col">Quantity</th>
+                          <th scope="col">Model scope</th>
                           <th scope="col">Expected arrival</th>
                         </tr>
                       </thead>
@@ -1665,6 +1676,7 @@ function App() {
                             </td>
                             <td>{order.supplier}</td>
                             <td>{number(order.quantity)}</td>
+                            <td>{order.model || "Factory shared"}</td>
                             <td>{day(order.expected_date)}</td>
                           </tr>
                         ))}

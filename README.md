@@ -16,6 +16,14 @@ Open [localhost:8000](http://localhost:8000). API documentation is at [localhost
 
 The first build downloads dependencies. No API key is required. To change the port or local database password, copy `.env.example` to `.env`.
 
+To add five locked example reports to a fresh database, run:
+
+```sh
+docker compose exec -T app python -m app.demo_reports
+```
+
+This adds one example per factory, including model-specific reports. It requires an empty report library and does not run automatically on startup. Demo locks prevent deletion; running an example saves an editable new version.
+
 For local report explanations, download the small model once:
 
 ```sh
@@ -40,9 +48,10 @@ To run a report:
 
 1. Open **Reports → New report** and give it a name.
 2. Select **Report factory / state**. This is independent of the global filter; each report covers one factory.
-3. Choose demand, supply risk, component failure, inventory recommendations, or a combination.
-4. Set a 7–90 day horizon and any demand or supplier-delay adjustments, then run it.
-5. Review the results and approve or deny purchase recommendations.
+3. Select **Report model** or **All models**. This selection applies to every analysis in the report.
+4. Choose demand, supply risk, component failure, inventory recommendations, or a combination.
+5. Set a 7–90 day horizon and any demand or supplier-delay adjustments, then run it.
+6. Review the results and approve or deny purchase recommendations.
 
 Reports save automatically. Approvals appear under **Proposed Inventory Orders** but do not change physical stock or send an order to a supplier. Run another report to include approved incoming supply in the calculations.
 
@@ -52,7 +61,7 @@ Use **Delete** in the report list or report view to remove a report from the lib
 
 ![All-factory Home dashboard with separate factory planning needs](docs/home-dashboard.png)
 
-[Report library](docs/reports-library.png) · [Report configuration](docs/report-configuration.png) · [Saved report](docs/report-dashboard.png) · [Demand forecast](docs/report-forecast.png) · [Local AI explanation and sources](docs/report-summary.png) · [Purchase recommendations](docs/report-recommendations.png)
+[Report library](docs/reports-library.png) · [Report configuration](docs/report-configuration.png) · [Model-specific report](docs/model-report.png) · [Saved report](docs/report-dashboard.png) · [Demand forecast](docs/report-forecast.png) · [Local AI explanation and sources](docs/report-summary.png) · [Purchase recommendations](docs/report-recommendations.png)
 
 Screenshots show the current app with synthetic data in a separate demo workspace.
 
@@ -67,7 +76,9 @@ The original CSV contains 10,000 synthetic observations from 2020–2023 and is 
 
 CSV row meaning and missing-week handling are assumptions. Scores on generated data describe the demo, not real-world accuracy. See [generation and calculation details](docs/implementation.md#calculations-and-assumptions).
 
-Mock factory data is in [planning.json](backend/app/fixtures/planning.json). Each factory has its own inventory and approved orders. The tractor-model filter limits the forecast and customer-order view; parts planning still includes all models at that factory because they share components.
+Mock factory data is in [planning.json](backend/app/fixtures/planning.json). Each factory has its own inventory and approved orders. A selected tractor model limits demand, customer orders, supplier history, BOM components, and purchases to that model. The BOM is an assumed demo mapping; the CSV does not supply actual tractor-to-part relationships.
+
+Physical stock remains shared within the factory. A model report uses its compatible unreserved parts as a scenario and does not reserve stock. Separate model reports are not additive stock allocations. Recalculate older model-filtered snapshots to replace their previous factory-wide parts and risk calculations with the new model scope.
 
 ## Code layout
 

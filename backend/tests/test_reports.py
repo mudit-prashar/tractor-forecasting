@@ -9,6 +9,7 @@ import urllib.request
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from statistics import mean
 
 from app.dataset import read_dataset
 
@@ -144,6 +145,36 @@ class ReportWorkflowTests(unittest.TestCase):
         independent = self.request('/reports', {'name': original['name'], 'factory': 'CA'}, 201)
         self.assertEqual(independent['version'], 1)
         self.assertEqual(independent['version_root_id'], independent['id'])
+
+    def test_model_scope_filters_history_components_and_approved_supply(self):
+        report = self.request('/reports', {'name': 'TX-100 only', 'factory': 'NY', 'model': 'TX-100', 'horizon_days': 90}, 201)
+        self.assertEqual(report['scope']['models'], ['TX-100'])
+        self.assertEqual({item['id'] for item in report['inventory']}, {'engine-small', 'tires', 'hydraulics', 'gearbox', 'cab'})
+        self.assertTrue(all(order['model'] == 'TX-100' for order in report['customer_orders']))
+        root = Path(__file__).resolve().parents[2]
+        _, rows = read_dataset(root / 'data/supply_chain.csv', root / 'data/supply_chain_mock_2024_2026.csv')
+        scoped = [row for row in rows if row[8] == 'NY' and row[2] == 'TX-100' and row[1] < date.fromisoformat(report['planning_date'])]
+        self.assertEqual(report['source_rows'], len(scoped))
+        for supplier in report['suppliers']:
+            samples = [row for row in scoped if row[4] == supplier['supplier']]
+            self.assertEqual(supplier['observations'], len(samples))
+            self.assertEqual(supplier['expected_delay_days'], round(mean(row[5] for row in samples), 1))
+            self.assertEqual(supplier['failure_rate_pct'], round(mean(row[6] for row in samples) * 100, 2))
+        component = next(item for item in report['recommendations'] if item['id'] == 'engine-small')
+        approved = self.request(f"/reports/{report['id']}/recommendations/engine-small/decision", {'action': 'approved'})
+        order = next(order for order in approved['planned_orders'] if order['report_id'] == report['id'])
+        self.assertEqual(order['model'], 'TX-100')
+        owner = self.request('/reports', {'factory': 'NY', 'model': 'TX-100', 'horizon_days': 90}, 201)
+        other = self.request('/reports', {'factory': 'NY', 'model': 'TX-200', 'horizon_days': 90}, 201)
+        combined = self.request('/reports', {'factory': 'NY', 'horizon_days': 90}, 201)
+        self.assertTrue(any(item['incoming_units'] > 0 for item in owner['inventory']))
+        self.assertFalse(any(item['id'] == order['id'] for item in other['planned_orders']))
+        self.assertEqual(next(item for item in other['inventory'] if item['id'] == 'engine-small')['incoming_units'], 0)
+        self.assertTrue(any(item['id'] == order['id'] for item in combined['planned_orders']))
+        self.assertEqual(next(item for item in combined['inventory'] if item['id'] == 'engine-small')['incoming_units'], component['quantity'])
+        before = {item['component_id']: (item['on_hand'], item['reserved']) for item in self.request('/factories/NY/workspace')['inventory']}
+        for item in owner['inventory']:
+            self.assertEqual((item['on_hand'], item['reserved']), before[item['id']])
 
     def test_delete_preserves_approved_supply_and_removes_planning_context(self):
         older = self.request('/reports', {'factory': 'IL', 'name': 'Retained report'}, 201)
