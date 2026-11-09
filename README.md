@@ -1,6 +1,6 @@
 # Tractor Supply Planning
 
-A local app for reviewing tractor demand, checking parts inventory, and approving purchase recommendations across five factories.
+A local planning service with a **React/TypeScript frontend, FastAPI backend, and PostgreSQL database** for reviewing tractor demand, checking parts inventory, and approving purchase recommendations across five factories.
 
 The app uses historical forecasting baselines and an optional local LLM to explain saved reports. Inventory, bills of materials, costs, and customer orders are mock data.
 
@@ -22,7 +22,7 @@ For local report explanations, download the small model once:
 docker compose exec llm ollama pull qwen3:1.7b
 ```
 
-Open a saved report and click **Generate summary**. Summaries include supporting report figures and persist with that report version. Forecasts and purchase quantities still come from the app's calculations. The model runs locally in Ollama; Docker inference on this Mac uses the CPU. The app works without a downloaded model.
+Open a saved report and click **Generate summary** in **Report explanation**. The local Qwen3 model writes one highlight per selected analysis with supporting report figures. Summaries are saved with that report version; use **Regenerate summary** after decisions change. Review the explanation alongside its sources. The app works without a downloaded model.
 
 ## Using the app
 
@@ -48,11 +48,13 @@ Reports save automatically. Approvals appear under **Proposed Inventory Orders**
 
 When a saved report is open, **Run next version** saves your edited settings as a new snapshot named `Texas demand review (v2)`, then `(v3)`. **Recalculate** also advances that sequence using the saved settings. Start a separate report or choose another factory through **New report** in the report library. Earlier reports and their decisions remain available.
 
-Use **Delete** in the report list or report view to remove a report. The five oldest reports present when this feature is first started are locked for the demo. Deleting a report keeps any approved purchase orders. Browser Back and Forward restore pages, report views, and the global factory selection.
+Use **Delete** in the report list or report view to remove a report from the library. Approved purchase orders and stored history are retained. Version numbers are never reused: deleting v2 means the next run is v3. Existing demo reports may be locked; a fresh database starts with no locked reports. Browser Back and Forward restore pages, report views, and the global factory selection.
 
-![Home](docs/home-dashboard.png)
+![All-factory Home dashboard with separate factory planning needs](docs/home-dashboard.png)
 
-[Report list](docs/reports-library.png) · [Report configuration and results](docs/report-dashboard.png)
+[Report library](docs/reports-library.png) · [Report configuration](docs/report-configuration.png) · [Saved report](docs/report-dashboard.png) · [Demand forecast](docs/report-forecast.png) · [Local AI explanation and sources](docs/report-summary.png) · [Purchase recommendations](docs/report-recommendations.png)
+
+Screenshots show the current app with synthetic data in a separate demo workspace.
 
 ## Data and calculations
 
@@ -69,15 +71,18 @@ Mock factory data is in [planning.json](backend/app/fixtures/planning.json). Eac
 
 ## Code layout
 
-React and TypeScript provide the UI. FastAPI serves the API and built frontend. PostgreSQL stores source observations, inventory, reports, and decisions. Docker Compose runs the app and database.
+Docker Compose runs the app, database, and Ollama service. FastAPI serves the API and built React frontend on the same port. Architecture, database tables, API routes, and calculation assumptions are documented in [implementation notes](docs/implementation.md).
 
 | File | Responsibility |
 | --- | --- |
 | [main.py](backend/app/main.py) | Startup, CSV import, and source-data endpoints |
 | [reports.py](backend/app/reports.py) | Factory data, saved reports, and approval transactions |
 | [planning.py](backend/app/planning.py) | Forecasts, component requirements, and purchase comparisons |
+| [summaries.py](backend/app/summaries.py) | Local-model requests, source facts, and output checks |
 | [main.tsx](frontend/src/main.tsx) | Navigation, factory selection, and report UI |
 | [WorkspacePages.tsx](frontend/src/WorkspacePages.tsx) | Home, inventory, and order pages |
+| [ReportSummary.tsx](frontend/src/ReportSummary.tsx) | Generate, display, and review saved explanations |
+| [generate_mock_history.py](scripts/generate_mock_history.py) | Reproducible extension of the original dataset |
 
 ## Development
 

@@ -2,11 +2,67 @@
 
 For startup and a tour of the app, see the [README](../README.md).
 
+## Services and data flow
+
+The service has a React/TypeScript frontend, a FastAPI backend, and a PostgreSQL database. The Docker build compiles the frontend; FastAPI serves that bundle and `/api` routes together on port 8000. In development, Vite proxies `/api` requests to that backend.
+
+| Compose service | Responsibility | Access and persistence |
+| --- | --- | --- |
+| `app` | FastAPI API, calculations, saved-report actions, and built React UI | Host `127.0.0.1:8000` by default; `APP_PORT` changes the host port |
+| `db` | PostgreSQL 17.6 source data and operational state | Internal port 5432; `postgres_data` volume |
+| `llm` | Ollama 0.40.15 serving the optional `qwen3:1.7b` model | Internal port 11434; `ollama_models` volume; model downloaded separately |
+
+```mermaid
+flowchart LR
+    Browser[React UI] --> API[FastAPI]
+    Source[CSV history and planning fixtures] --> API
+    API --> DB[PostgreSQL]
+    API -- Generate summary --> LLM[Local Ollama model]
+```
+
+The app can start and calculate reports while the model is unavailable. Summary generation is an explicit action on a saved report. The model receives bounded facts from that snapshot; calculations and approval transactions remain backend operations.
+
+## Database storage
+
+Startup imports source observations by checksum and applies additive schema changes. Operational state is partitioned by factory. Existing reports, orders, and stock are preserved across restarts and imports.
+
+| Table | Primary key | Stored data |
+| --- | --- | --- |
+| `dataset_imports` | `checksum` | Import filename, observation count, and import timestamp |
+| `observations` | `(dataset_checksum, source_row)` | Validated source observations, including the synthetic extension |
+| `factory_state` | `site` | Revision counter used for approval locking and stale-report checks |
+| `factory_inventory` | `(site, component_id)` | Physical on-hand and reserved component balances |
+| `report_runs` | `id` | Name, factory, configuration, calculation snapshot, source checksum, inventory revision, deletion timestamp, and demo lock |
+| `planning_purchase_orders` | `id` | Approved internal purchase plans linked to their originating report; unique per report/component |
+| `recommendation_decisions` | `(report_id, component_id)` | Approved/denied decisions, decision timestamp, and optional purchase-order ID |
+| `report_summaries` | `report_id` | One saved explanation per snapshot, with model, prompt version, input checksum, content, and timestamp |
+| `planning_state` | `id` | Legacy CA-only revision table, retained for migration compatibility |
+| `planning_inventory` | `component_id` | Legacy CA-only balances, retained for migration compatibility |
+
+The current app reads and updates the factory-specific tables for operational planning. Component definitions, BOMs, supplier settings, and mock customer orders come from `planning.json`, rather than separate database tables. Historical CSV inventory levels are source observations and do not become physical component stock.
+
+`report_runs.config` and `report_runs.result` are JSONB. Version metadata is stored in `result`, for example:
+
+```json
+{
+  "version": 3,
+  "version_root_id": "original-report-id",
+  "version_base_name": "California supply review",
+  "recalculated_from": "previous-snapshot-id"
+}
+```
+
+Version links are application-managed JSON references. `is_stale` and summary `is_outdated` are computed when reports are loaded, not stored boolean columns. See [Saved reports and decisions](#saved-reports-and-decisions) for lifecycle behavior.
+
 ## Calculations and assumptions
 
 ### Source data
 
 The supplied synthetic CSV has 10,000 observations from 2020–2023 and is preserved unchanged. The separate `data/supply_chain_mock_2024_2026.csv` adds 6,977 mock observations from January 1, 2024 through November 7, 2026. Warehouse codes are treated as factory IDs. Reports use only the selected factory's observations before the fixed demo planning date of November 8, 2026. The date does not move on reload.
+
+Row meaning is undocumented. The app assumes demand rows are additive. Historical inventory values are retained as source observations, not summed into current component stock.
+
+Missing weeks are unknown, not zero. Zero would be appropriate only if the source were a complete transaction log where no row means no demand. Partial boundary weeks are excluded. Missing values should be repaired or excluded once source semantics are known, rather than interpolated without evidence.
 
 ### Generating the extension
 
@@ -24,10 +80,6 @@ Only dates are replaced, preserving the sampled combinations of factory, model, 
 
 Startup validates and imports the original and extension together under one checksum, retaining separate files and original source values. A new checksum imports new history without deleting saved reports, stock, decisions, or approved orders. `MOCK_DATA_PATH` selects the extension; an empty value disables it. After changing generated files, rebuild the app with `docker compose up --build -d`. Changing the planning date also requires updating `planning.json` and its fixture version; saved reports and approved-order dates remain frozen.
 
-Row meaning is undocumented. The app assumes demand rows are additive. Historical inventory values are retained as source observations, not summed into current component stock.
-
-Missing weeks are unknown, not zero. Zero would be appropriate only if the source were a complete transaction log where no row means no demand. Partial boundary weeks are excluded. Missing values should be repaired or excluded once source semantics are known, rather than interpolated without evidence.
-
 ### Forecasts and risks
 
 Demand uses the mean of the last eight complete observed weeks. The report scales this baseline to the selected horizon and demand scenario. Confirmed customer orders replace the daily forecast when larger, rather than being added to it.
@@ -44,11 +96,13 @@ There is no trained forecasting ML model. Optional report explanations use a pre
 
 ### Local report explanations
 
-Ollama runs as the `llm` Compose service with a persistent `ollama_models` volume. It has no host port. The app calls its native `/api/chat` endpoint over the Compose network. Defaults are `LLM_BASE_URL=http://llm:11434`, `LLM_MODEL=qwen3:1.7b`, and `LLM_TIMEOUT_SECONDS=120`. Model downloads require network access; inference uses the local model and sends no report data to a hosted model API. Download the model with `docker compose exec llm ollama pull qwen3:1.7b`. Other models can be selected through `.env` and downloaded separately. An empty `LLM_BASE_URL` disables generation.
+Ollama runs as the `llm` Compose service with a persistent `ollama_models` volume. It has no host port. The app calls its native `/api/chat` endpoint over the Compose network. Defaults are `LLM_BASE_URL=http://llm:11434`, `LLM_MODEL=qwen3:1.7b`, and `LLM_TIMEOUT_SECONDS=120` per inference attempt. Model downloads require network access; the default inference path uses the local model and sends no report data to a hosted model API. Download the model with `docker compose exec llm ollama pull qwen3:1.7b`. Other models can be selected through `.env` and downloaded separately. An empty `LLM_BASE_URL` disables generation.
 
-Docker Model Runner was evaluated first. The installed v0.1.11 runner rejected the current 1.7B package format and timed out loading the compatible older 0.6B package. The app therefore uses the separate Ollama service. This runs on CPU under Docker Desktop on macOS; first inference includes model loading. A future native runtime could improve speed.
+Ollama uses CPU inference under Docker Desktop on macOS. Model loading and the number of selected analyses affect latency; cached summaries load without inference. A native GPU-capable runtime could improve speed, but the current Compose setup uses the local Ollama container.
 
-`summaries.py` prepares a bounded set of factual sentences from the saved report and its current decision statuses, covering only selected analyses. Chart facts explain the mean baseline and the uncalibrated range; no trend is inferred from partial chart weeks. User-supplied report names and customer names are excluded from model input. The JSON schema requires one highlight per selected analysis, each citing one or two facts allowed for that analysis. Inventory highlights must cite purchase proposals when present. Temperature is zero, thinking is disabled, and output is bounded in length. The backend checks response shape, selected-analysis coverage, references, repeated bullets, numeric values against their cited facts, and some unsupported approval/receipt language. These checks do not prove semantic correctness, correct units, or the quality of every interpretation; supporting source sentences remain visible for review. Invalid output returns an error, not a fabricated AI summary.
+`summaries.py` prepares factual sentences from the saved report and current decision statuses. Only facts allowed for the selected analyses are sent to the model: the demand total and baseline, up to three purchase proposals ranked by purchase cost, the two largest expected supplier delays, and the largest supplier failure-rate proxy. The demand chart remains a view of the backend's saved forecast values and historical spread. User-supplied report names and customer names are excluded from model input.
+
+The JSON schema requires one highlight per selected analysis, each citing one or two facts allowed for that analysis. Inventory highlights must cite purchase proposals when present and retain their decision status. Temperature is zero, thinking is disabled, and output is bounded in length. The backend checks response shape, selected-analysis coverage, references, repeated bullets, numeric values against their cited facts, and some unsupported approval/receipt language. These checks do not prove semantic correctness, correct units, or the quality of every interpretation; supporting source sentences remain visible for review. Invalid output returns an error, not a fabricated AI summary.
 
 One summary is stored per report snapshot in `report_summaries`:
 
@@ -65,7 +119,7 @@ CREATE TABLE report_summaries (
 
 The model receives facts grouped by their allowed analysis section, which prevents unrelated inventory metrics from distracting it from purchase proposals. Invalid output gets at most one additional attempt with an instruction to copy a cited fact sentence exactly; both attempts are validated. Connection failures are not retried automatically.
 
-Content includes highlights, cited source facts, total elapsed time, attempt count, token counts for the successful attempt, and model digest when available. A current cached summary is reused unless regeneration is requested. Changed decisions, report context, prompt version, or configured model mark it outdated. Regeneration replaces that snapshot's summary. A new report version starts without a summary. Generating a summary does not change forecasts, stock, decisions, or approved orders.
+Content includes highlights, cited source facts, total elapsed time, attempt count, token counts for the successful attempt, and model digest when available. A current cached summary is reused unless regeneration is requested. Changed decisions, report context, prompt version, or configured model name mark it outdated. Updating weights under the same model tag requires explicit regeneration; the recorded digest is provenance, not a cache invalidation check. Regeneration replaces that snapshot's summary. A new report version starts without a summary. Generating a summary does not change forecasts, stock, decisions, or approved orders.
 
 Inference holds no database transaction or factory lock. The app permits one active generation per process and checks the report input checksum again under the factory lock before saving. Concurrent changes return a conflict. Deleted reports cannot generate or retrieve summaries. Missing models, connection errors, timeouts, and invalid outputs leave any saved summary intact.
 
@@ -105,6 +159,8 @@ Approval creates an internal planned purchase order and increments that factory'
 Approvals from another report, a changed source checksum, or a changed planning fixture version make a saved report stale. Further approvals then require recalculation. Existing decisions and approved orders remain unchanged. Old approved orders retain their dates and are included in report receipts only if they fall inside the new planning horizon; they are not automatically received or moved forward. Home labels stale planning results and excludes them from its pending-needs total. Proposed Inventory Orders is read-only.
 
 Report deletion sets a deletion timestamp. Deleted reports are excluded from the library, report retrieval, decisions, and Home's latest-report selection. Stored calculation snapshots and decisions remain available to approved purchase orders; deleting a report does not cancel supply or change stock. Deletion uses the same factory transaction lock as approval. Repeated deletion succeeds without further changes.
+
+Deletion does not reset the sequence: if v2 is deleted, the next saved run is v3. Gaps in the visible report list are expected.
 
 On the first schema upgrade, the five oldest existing reports are marked as locked demo reports. These flags persist across restarts; new reports are deletable. A fresh database with no saved reports has no locked demo reports.
 
@@ -147,7 +203,7 @@ Calculation tests use Python's standard library. API tests require a fresh datab
 
 ```sh
 docker compose exec -T db createdb -U tractor tractor_test
-docker compose run -d --name tractor-test-app \
+docker compose run --rm -d --name tractor-test-app \
   -p 127.0.0.1:8001:8000 -e PGDATABASE=tractor_test app
 ```
 
@@ -161,10 +217,24 @@ REPORT_TEST_URL=http://localhost:8001 PYTHONPATH=backend \
 Remove the test instance and its database afterward:
 
 ```sh
-docker rm -f tractor-test-app
+docker stop tractor-test-app
 docker compose exec -T db dropdb -U tractor tractor_test
 ```
 
 Tests cover calculations, future-data isolation, stock accounting, factory isolation, validation, duplicate approvals, stale reports, and all-factory totals. Browser checks have also covered navigation, independent factory selectors, saved results, exports, reduced motion, top alignment, and mobile layouts.
 
 Summary unit tests cover input scoping, source references, numeric checks, malformed output, model failures, and cache invalidation. Set `REPORT_TEST_LLM=1` alongside `REPORT_TEST_URL` to run the real local-model persistence, caching, decision-change, and report-version checks against an isolated database. This needs the Ollama service and downloaded model; these tests never use the normal app database.
+
+## Documentation screenshots
+
+Screenshots use the current app with a separate temporary database: one report for each factory, a California report with an approved internal order and a second version, and a locally generated explanation. The planning date is November 8, 2026. This keeps documentation examples separate from the user's saved workspace.
+
+| Screenshot | View |
+| --- | --- |
+| [Home](home-dashboard.png) | All-factory overview and separate planning needs |
+| [Report library](reports-library.png) | Saved factory reports and versioned snapshots |
+| [Report configuration](report-configuration.png) | Selected analyses, fixed report factory, and Run next version |
+| [Saved report](report-dashboard.png) | Report context, metrics, and local explanation |
+| [Demand forecast](report-forecast.png) | Historical weekly observations, baseline forecast, and empirical range |
+| [Local explanation](report-summary.png) | Generated highlights with their supporting source facts |
+| [Purchase recommendations](report-recommendations.png) | Supplier, shipping, quantity, modeled costs, and approve/deny actions |
