@@ -14,7 +14,7 @@ docker compose up --build -d
 
 Open [localhost:8000](http://localhost:8000). API documentation is at [localhost:8000/docs](http://localhost:8000/docs).
 
-The first build downloads dependencies. No API key is required. To change the port or local database password, copy `.env.example` to `.env`.
+The first build downloads app dependencies and PostgreSQL. Ollama and the AI model are skipped by default; forecasting, reports, and approvals work without them. No API key is required. To change the port or local database password, copy `.env.example` to `.env`.
 
 To add five locked example reports to a fresh database, run:
 
@@ -24,13 +24,16 @@ docker compose exec -T app python -m app.demo_reports
 
 This adds one example per factory, including model-specific reports. It requires an empty report library and does not run automatically on startup. Demo locks prevent deletion; running an example saves an editable new version.
 
-For local report explanations, download the small model once:
+To enable optional local AI explanations later, start Ollama and download the model:
 
 ```sh
+docker compose --profile ai up -d --wait llm
 docker compose exec llm ollama pull qwen3:1.7b
 ```
 
-Open a saved report and click **Generate summary** in **Report explanation**. The local Qwen3 model writes one highlight per selected analysis with supporting report figures. Summaries are saved with that report version; use **Regenerate summary** after decisions change. Review the explanation alongside its sources. The app works without a downloaded model.
+No separate Ollama installation is needed. The model download is saved between restarts; after stopping the services, run the first command again to start Ollama.
+
+Open a saved report and click **Generate summary** in **Report explanation**. The local Qwen3 model writes one highlight per selected analysis with supporting report figures. Summaries are saved with that report version; use **Regenerate summary** after decisions change. Review the explanation alongside its sources.
 
 ## Using the app
 
@@ -82,7 +85,7 @@ Physical stock remains shared within the factory. A model report uses its compat
 
 ## Code layout
 
-Docker Compose runs the app, database, and Ollama service. FastAPI serves the API and built React frontend on the same port. Architecture, database tables, API routes, and calculation assumptions are documented in [implementation notes](docs/implementation.md).
+Docker Compose runs the app and database, with Ollama available through the optional `ai` profile. FastAPI serves the API and built React frontend on the same port. Architecture, database tables, API routes, and calculation assumptions are documented in [implementation notes](docs/implementation.md).
 
 | File | Responsibility |
 | --- | --- |
@@ -117,8 +120,8 @@ API tests are skipped unless a separate test instance is configured. See [API te
 
 ## Local data
 
-`docker compose down` stops the app and keeps the database. Reports and decisions survive restarts.
+`docker compose down` stops the app and keeps the database. Reports and decisions survive restarts. If AI explanations were enabled, use `docker compose --profile ai down` to stop Ollama too.
 
-`docker compose down --volumes` deletes the local database and downloaded models.
+`docker compose --profile ai down --volumes` deletes the local database and downloaded models.
 
 The app is intended for a local demo: it listens on localhost and has no login.

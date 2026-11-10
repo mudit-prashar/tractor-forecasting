@@ -1434,3 +1434,7 @@ footer {
   flex-wrap: wrap;
   gap: 14px;
 }
+.ai-summary pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

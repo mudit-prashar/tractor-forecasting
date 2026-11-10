@@ -1,6 +1,7 @@
 services:
   llm:
     image: ollama/ollama:0.40.15
+    profiles: [ai]
     volumes:
       - ollama_models:/root/.ollama
     environment:

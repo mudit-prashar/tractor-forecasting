@@ -10,7 +10,7 @@ The service has a React/TypeScript frontend, a FastAPI backend, and a PostgreSQL
 | --- | --- | --- |
 | `app` | FastAPI API, calculations, saved-report actions, and built React UI | Host `127.0.0.1:8000` by default; `APP_PORT` changes the host port |
 | `db` | PostgreSQL 17.6 source data and operational state | Internal port 5432; `postgres_data` volume |
-| `llm` | Ollama 0.40.15 serving the optional `qwen3:1.7b` model | Internal port 11434; `ollama_models` volume; model downloaded separately |
+| `llm` | Ollama 0.40.15 serving the optional `qwen3:1.7b` model | Opt-in `ai` profile; internal port 11434; `ollama_models` volume; model downloaded separately |
 
 ```mermaid
 flowchart LR
@@ -20,7 +20,7 @@ flowchart LR
     API -- Generate summary --> LLM[Local Ollama model]
 ```
 
-The app can start and calculate reports while the model is unavailable. Summary generation is an explicit action on a saved report. The model receives bounded facts from that snapshot; calculations and approval transactions remain backend operations.
+Default startup runs only `app` and `db`, without downloading or starting Ollama. The app can start and calculate reports while the model is unavailable. Summary generation is an explicit action on a saved report. The model receives bounded facts from that snapshot; calculations and approval transactions remain backend operations.
 
 ## Database storage
 
@@ -96,7 +96,9 @@ There is no trained forecasting ML model. Optional report explanations use a pre
 
 ### Local report explanations
 
-Ollama runs as the `llm` Compose service with a persistent `ollama_models` volume. It has no host port. The app calls its native `/api/chat` endpoint over the Compose network. Defaults are `LLM_BASE_URL=http://llm:11434`, `LLM_MODEL=qwen3:1.7b`, and `LLM_TIMEOUT_SECONDS=120` per inference attempt. Model downloads require network access; the default inference path uses the local model and sends no report data to a hosted model API. Download the model with `docker compose exec llm ollama pull qwen3:1.7b`. Other models can be selected through `.env` and downloaded separately. An empty `LLM_BASE_URL` disables generation.
+Ollama runs as the `llm` Compose service under the optional `ai` profile, with a persistent `ollama_models` volume. It has no host port. Start it with `docker compose --profile ai up -d --wait llm`, then download the model once with `docker compose exec llm ollama pull qwen3:1.7b`. These commands also work after the app has started; no app restart is needed. After stopping the services, start `llm` again with the first command. Use `docker compose --profile ai down` to stop all services, including Ollama.
+
+The app calls Ollama's native `/api/chat` endpoint over the Compose network. Defaults are `LLM_BASE_URL=http://llm:11434`, `LLM_MODEL=qwen3:1.7b`, and `LLM_TIMEOUT_SECONDS=120` per inference attempt. Model downloads require network access; the default inference path uses the local model and sends no report data to a hosted model API. Other models can be selected through `.env` and downloaded separately. An empty `LLM_BASE_URL` disables generation.
 
 Ollama uses CPU inference under Docker Desktop on macOS. Model loading and the number of selected analyses affect latency; cached summaries load without inference. A native GPU-capable runtime could improve speed, but the current Compose setup uses the local Ollama container.
 

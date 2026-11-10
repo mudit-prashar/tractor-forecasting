@@ -57,7 +57,7 @@ export function ReportSummary({ reportId, initialSummary }: {
       <div className="panel-heading">
         <div>
           <h2>Report explanation</h2>
-          <p>Generated locally from this report’s figures and recommendations.</p>
+          <p>Optional local AI explanation. Forecasts, recommendations, and approvals work without it.</p>
         </div>
         <button className="secondary" disabled={busy} onClick={() => void generate()}>
           {busy ? "Generating summary…" : summary ? "Regenerate summary" : "Generate summary"}
@@ -94,6 +94,12 @@ export function ReportSummary({ reportId, initialSummary }: {
           </p>
         </>
       ) : !busy && <p className="footnote">Summarize the selected analyses with links to their supporting figures. Your forecast and purchase calculations remain the source of those figures.</p>}
+      <details className="method">
+        <summary>Enable local AI explanations</summary>
+        <p>From the project folder, start Ollama and download the model once:</p>
+        <pre><code>{"docker compose --profile ai up -d --wait llm\ndocker compose exec llm ollama pull qwen3:1.7b"}</code></pre>
+        <p>Then generate a summary. The model download is saved for future runs; start Ollama again after stopping the services.</p>
+      </details>
     </section>
   );
 }
